@@ -141,8 +141,18 @@ Record the observation.
 
 ## §6.5 Gateway upgrade (explicit replacement only)
 
+> **N2 PROHIBITION — DO NOT INVOKE LIVE.** The upgrade idle check has
+> a time-of-check/time-of-use window (an assign racing the upgrade
+> can start a run after the scan but before replacement) and skips
+> builds with empty URLs instead of refusing them. Until N2 is fixed
+> and tested, **no live `gateway upgrade` operation is authorized**.
+> If binary drift is detected during a future live run, STOP and
+> report rather than bypassing the guard. The procedure below is
+> preserved for use after N2 closure.
+
 Provisioning NEVER replaces a running gateway binary. When the binary
-must change (drift refusal names this op), replace it explicitly:
+must change (drift refusal names this op), replace it explicitly
+(after N2 closure — see prohibition above):
 
 ```bash
 go run ./cmd/studio gateway upgrade --tenant '<TENANT>' --build '<BUILD>' \
@@ -173,6 +183,34 @@ sprite exec -s '<SPRITE>' -- id -u; echo "---"; sprite exec -s '<SPRITE>' -- 'co
 - Re-run provision once more regardless: expect success with the SAME
   sprite name (attach path), proving retry convergence.
 
+### §7a Gateway SERVICE privilege (N1 — distinct from exec privilege)
+
+The §7 `id -u` above is the *exec channel*. The gateway *service*
+needs its own privilege to drop agent processes to `studio-agent`
+(uid + gid + supplementary groups). After the service is running
+(§6/§9), derive its actual identity from the live process — never
+assume it:
+
+```bash
+sprite exec -s '<SPRITE>' -- ps -o pid=,user=,args= -C studio-gateway
+GW_PID=<pid from above>
+sprite exec -s '<SPRITE>' -- awk '/^Uid:/ {print "euid="$3}' /proc/<GW_PID>/status
+```
+
+Record the service EUID verbatim. Contract:
+
+- Reference: service EUID 0 (privileged) — the credential drop is
+  expected to work, and §7b proves it. The gateway also self-tests
+  at boot (spawns `true` as the agent user; a service that cannot
+  drop refuses to start — check service logs for `boot refused`
+  on any early failure).
+- Non-root service EUID: acceptable ONLY if the §7b drop proofs
+  pass (agent runs as `studio-agent`, keys denied). The boot
+  self-test is the first gate — if it refuses, the configuration
+  lacks privilege: STOP and report, do not weaken to single-user.
+- A service running as `studio-gw` without drop privilege must
+  never be assumed capable of launching `studio-agent`.
+
 ## §7b Identity and inbox proofs (B1 live gate — observe, record)
 
 The fake-backed suite proves refusal and plumbing only. These checks
@@ -185,29 +223,38 @@ not replace a kernel-observed denial):
 
 ```bash
 AGENT_UID=$(sprite exec -s '<SPRITE>' -- id -u studio-agent)
-sprite exec -s '<SPRITE>' -- ps -o user=,args= -C studio-gateway  # gateway uid (expect root/service)
+GW_EUID=$(sprite exec -s '<SPRITE>' -- awk '/^Uid:/ {print $3}' /proc/<GW_PID>/status)  # from §7a
+IO_GID=$(sprite exec -s '<SPRITE>' -- getent group studio-io | cut -d: -f3)
+echo "service euid=$GW_EUID agent uid=$AGENT_UID io gid=$IO_GID"
 sprite exec -s '<SPRITE>' -- runuser -u studio-agent -- cat /srv/studio-gateway/keys/keys-<build12>.json; echo "expect: EACCES (exit ≠ 0)"
 sprite exec -s '<SPRITE>' -- runuser -u studio-agent -- ls /srv/studio-gateway/keys/; echo "expect: EACCES (exit ≠ 0)"
 ```
 
-Expected: gateway runs privileged; every agent read of the keys dir
-or files fails with permission denied (record exit codes + stderr).
+Expected: every agent read of the keys dir or files fails with
+permission denied (record exit codes + stderr). The keys stay
+setup-owned `0600 studio-gw` regardless of service uid — only the
+gateway (owner or privileged) reads them.
 Then the inbox matrix on a provisioned build workdir
 (`/srv/studio-agent/builds/<...>/.studio/inbox`, created at first
-assign — run §10 first if needed):
+assign — run §10 first if needed). Gateway-created paths carry the
+SERVICE EUID (N1 — never assume the literal owner name `studio-gw`):
 
 ```bash
-sprite exec -s '<SPRITE>' -- stat -c '%a %U %G %n' <workdir>/.studio <workdir>/.studio/inbox
+sprite exec -s '<SPRITE>' -- stat -c '%a %u %g %n' <workdir>/.studio <workdir>/.studio/inbox
 sprite exec -s '<SPRITE>' -- runuser -u studio-agent -- touch <workdir>/.studio/inbox/agent-write-probe && echo WRITE_OK
 sprite exec -s '<SPRITE>' -- runuser -u studio-agent -- rm <workdir>/.studio/inbox/agent-write-probe && echo DELETE_OWN_OK
 ```
 
-Expected: `.studio` = `2750 studio-gw studio-io`, inbox = `2730
-studio-gw studio-io`; agent writes + deletes its own drop. After a
-yield + continue cycle (§10 extended or a second turn): `answer.json`
-is `0640 studio-gw studio-io`, the agent can `cat` it, and agent
-overwrite/remove attempts fail (record each). Any deviation stops the
-run — do not weaken the boundary to proceed.
+Expected: `.studio` = `2750 $GW_EUID $IO_GID`, inbox = `2730
+$GW_EUID $IO_GID` (numeric owner must equal the §7a service EUID,
+group must equal the `studio-io` GID); agent writes + deletes its
+own drop. After a yield + continue cycle (§10 extended or a second
+turn): `answer.json` is `0640 $GW_EUID $IO_GID`, the agent can
+`cat` it, and agent overwrite/remove attempts fail (record each).
+Any deviation stops the run — do not weaken the boundary to
+proceed. (N1 correction: earlier revisions hardcoded `studio-gw`
+as the file owner, which contradicts privileged-service
+operation — the file creator's EUID is the correct expectation.)
 
 Fallback (only if no agent-uid exec channel exists): assign two
 supervised turns on a scratch build — (a) "run `id -u`, `id -g`,
@@ -312,8 +359,8 @@ replace reports with observations.
 |---|---|---|
 | provision: non-assigned/already-provisioned | build state guard | use a fresh build; re-check |
 | provision: sprite exists, install fails | partial state | fix cause, re-run (attach converges) |
-| provision: binary differs, run gateway upgrade | staged binary drifted from deployed | do NOT re-provision; use §6.5 upgrade |
-| provision: service unhealthy / inspection failed | needs diagnosis | STOP touching it; diagnose, then explicit upgrade |
+| provision: binary differs, run gateway upgrade | staged binary drifted from deployed | do NOT re-provision; STOP and report — §6.5 upgrade is prohibited live until N2 closes |
+| provision: service unhealthy / inspection failed | needs diagnosis | STOP touching it; diagnose and report (upgrade path needs N2 closure first) |
 | upgrade: live agent run | guard held | drain runs, or repeat with --force deliberately |
 | setup.sh: "must run as root" | no privilege channel | STOP, report (§7) |
 | setup.sh: missing prerequisite | image lacks packages | D5 install, re-run |
@@ -353,7 +400,7 @@ from this runbook with reasons.
 
 ## §15 Phase B live-segment backlog (must close before Phase B exit)
 
-- M5: SSE max stream lifetime (+ concurrent-stream budget decision).
+- M5-SSE: SSE max stream lifetime (+ concurrent-stream budget decision).
 - Serve-time `STUDIO_GATEWAY_BINARY` wiring (CLI flag exists; serve
   currently refuses without it).
 - Studio sender loop stays Phase C (recorded, not forgotten).

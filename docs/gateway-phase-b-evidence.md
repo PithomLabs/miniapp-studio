@@ -4,8 +4,9 @@ Implementation of `plans/prompt9_imp.md` Part 1 (authorized; Part 2 live
 work explicitly NOT started). No live Sprite, Fly API mutation, OAuth,
 or external action was performed: every proof below runs against
 in-process fakes, scripted doubles, real local processes, or Docker
-Postgres. Boundaries held: F1/G-01/P5 frozen, M5–M8 carried, Miniapp
-untouched, no commits.
+Postgres. Boundaries held: F1/G-01/P5 frozen, M5–M8 carried
+(prompt9 numbering; M5 here = M5-SSE per the N4 mapping below),
+Miniapp untouched, no commits.
 
 ## Gates executed (Part 1 pass)
 
@@ -49,7 +50,16 @@ untouched, no commits.
 - `cmd/studio gateway provision|command`: operator CLI for the live
   runbook (fake-tested; performs nothing without invocation + live env).
 
-## Capability matrix v1 (honest states)
+> **SUPERSEDED — HISTORICAL RECORD ONLY (N4).** Capability matrix
+> v1 below describes the initial Part 1 implementation BEFORE the
+> prompt11 correction pass. Matrix v2 ("Capability matrix v2
+> (five states)", later in this file) and
+> `docs/prompt11-correction-report.md` are the governing current
+> evidence. Present-tense claims inside the v1 block (e.g. "Live P-G3
+> now proves…") must NOT be read as current verification. Preserved
+> for audit trail; do not delete.
+
+## Capability matrix v1 (SUPERSEDED — see banner above)
 
 | Capability | State | Evidence / next proof |
 |---|---|---|
@@ -78,15 +88,16 @@ untouched, no commits.
 | Sprite exec privilege (root for setup) | UNKNOWN | live discovery, fail-closed |
 | Wake-on-command latency | UNKNOWN | live timing |
 | Studio sender loop (DB dispatch) | NOT BUILT — deferred to Phase C | matrix record (this line) |
-| SSE stream lifetime (M5) | NOT BUILT — live-segment checklist | runbook §L |
+| SSE stream lifetime (M5-SSE) | NOT BUILT — live-segment checklist | runbook §L |
 
 ## Deviations and findings (with reasons)
 
 1. **P-G3 primary path refuted by source inspection** (run.ts @ v1.19.6:
    non-interactive sessions hard-deny the `question` tool, and the run
    loop has no question-reply path). The file-drop handshake is therefore
-   the REQUIRED mechanism, not a fallback. Live P-G3 now proves agent
-   compliance with the file convention instead.
+   the REQUIRED mechanism, not a fallback. [Historical wording: at the
+   time this read "Live P-G3 now proves agent compliance"; the live
+   proof remained future work then as now — see matrix v2.]
 2. **Adapter returns event channels from Start/Continue** (no separate
    Events call): a fast run could otherwise finish before subscription,
    losing its terminal event. Race eliminated by construction.
@@ -102,7 +113,7 @@ untouched, no commits.
    is safe under both (warm = nothing restarts; cold = recovery marks
    failed, Studio re-drives), and the runbook observes and records which
    holds instead of assuming.
-7. **M5 deferred to the live-segment checklist** (operational hardening
+7. **M5-SSE deferred to the live-segment checklist** (operational hardening
    with no fake-backed signal); M6 restated below; M7 stays Phase D; M8
    counts in this file are exact.
 
@@ -142,9 +153,10 @@ untouched, frozen docs untouched, no commits, PG19-only verification.
   fail-closed stubs compile).
 - `sh -n tools/provisiondata/setup.sh` → ok.
 - Probes P1–P4 re-run green (see below).
-- Test counts (exact, counted): gateway 99, store 23, tools 58,
-  server 56, cmd/studio 9, cmd/gateway 3, fly 16, apps 5, connector 3,
-  render 11, runner 29, spec 34, spike 3 — 349 total.
+- Test counts (exact, counted at prompt11 close): gateway 99,
+  store 23, tools 58, server 56, cmd/studio 9, cmd/gateway 3, fly 16,
+  apps 5, connector 3, render 11, runner 29, spec 34, spike 3 — 349
+  total. Prompt12 adds 7 N1 tests in cmd/gateway → 356 total.
 - Tree state: all-untracked, zero commits (no-commit boundary held).
 
 ## Probe re-run (corrected tree)
@@ -155,6 +167,24 @@ untouched, frozen docs untouched, no commits, PG19-only verification.
   run fails honestly.
 - P3: victim intact (`clobbered=false`), answer slot real + 0640.
 - P4: `kinds=[progress progress message done]` — no premature terminal.
+
+## N4 identifier mapping (prompt12 residual closure)
+
+Two distinct findings share the label M5 in project history:
+
+- **M5-STDERR** — bounded Gateway stderr buffering (32KB tail ring),
+  the prompt10-review minor, implemented and tested during the
+  prompt11 correction pass.
+- **M5-SSE** — SSE stream lifetime + concurrent-stream-budget
+  operational item from `plans/prompt10.md` §7 carried items,
+  still deferred (live-segment checklist).
+
+Why the collision exists: the prompt10 adversarial review numbered
+its own minor findings M1–M16 independently of prompt10's carried
+operational items, reusing M5 for the stderr ring. Both lineages
+are now in-tree, so bare "M5" is ambiguous and is no longer used
+in current documents. Historical prompt/review documents keep
+their original labels untouched.
 
 ## Capability matrix v2 (five states)
 
@@ -222,12 +252,16 @@ proof; live rows never claim fake proof.
 - G8 (flyErr assertion): corrected — comment downgraded to
   capped-but-unverified with the required live inspection.
 
-## M1–M16 dispositions (all fixed, none carried)
+## M1–M16 dispositions (prompt11 bundle all fixed, none carried)
+
+"All fixed" here means the prompt11 correction bundle's findings,
+including M5-STDERR below. M5-SSE (SSE stream lifetime) is NOT part
+of that bundle and remains deferred — see the N4 mapping.
 
 M1 dir-fsync (3 stores + helper test); M2 per-attempt timeout
 (component-level, hanging-stub test); M3 SIGTERM + WithoutCancel +
 Shutdown (signal/cancel tests); M4 process groups + group reap with
-non-leader fallback (grandchild tests); M5 stderr ring (wedge +
+non-leader fallback (grandchild tests); M5-STDERR stderr ring (wedge +
 bounded-tail tests); M6 partial list + emit-before-mark + deterministic
 ids (skip + idempotence tests); M7 argv[0] + starttime reaper (decoy +
 reuse + parser tests); M8 fd-pinned collector (refusal + swap tests);
@@ -271,6 +305,38 @@ test).
 - Unknown self-ticks degrade the reaper to argv[0]-exact with a loud
   boot warning (documented residual).
 - `shortID` hashes non-hex ids (defense in depth; Studio mints hex).
+
+## N1 service privilege contract (prompt12 residual closure)
+
+The `SysProcAttr.Credential` drop requires a privileged Gateway
+service (reference: root). Non-root service identities are
+acceptable only when the boot self-test passes and live §7b proves
+the complete uid+gid+groups transition; `studio-gw`-as-service
+without privilege must never be assumed capable. Production never
+falls back to same-UID launch (boot distinctness check +
+supervisor refusal); insufficient privilege fails closed at boot
+(`boot refused`) and at command time. Boot proves the drop by
+spawning `true` through the exact production credential
+configuration before recovery or readiness
+(`cmd/gateway/main.go`: `checkAgentDistinct` + `checkAgentSpawn`,
+unit-tested success/EPERM/distinctness paths, no bypass).
+Filesystem ownership is creator-based: setup-created paths carry
+setup-pinned owners (`studio-gw` keys, root binary);
+gateway-created paths (state, workdirs, `.studio`, inbox, answers)
+carry the service EUID as observed live — runbook §7a/§7b derive
+and compare it numerically instead of assuming `studio-gw`.
+
+## N2–N10 residual register (prompt12; tracked, not implemented)
+
+Full register with root causes and corrections: closure report §9.
+Operationally binding now: **N2 prohibits any live `gateway
+upgrade`** until the idle-check TOCTOU is fixed and tested (runbook
+§6.5 banner); **N8 prohibits re-provisioning beside untrusted
+sibling agents** until staging write modes are restricted; N5/N6
+implications (pidless-crash orphans, unbounded launch capture)
+must be disclosed before depending on automated recovery, with
+pre-restart PIDs recorded and absence verified. N3/N7/N9/N10 ride
+future touches of their files. N4 closed in this pass.
 
 ## Residuals and live unknowns (carried, not hidden)
 

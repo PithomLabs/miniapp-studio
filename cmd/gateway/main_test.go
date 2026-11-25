@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +111,194 @@ func TestResolveAgentRefusesUnknown(t *testing.T) {
 	}
 	if !cred.Set || cred.UID != uint32(os.Geteuid()) {
 		t.Errorf("credential = %+v, want current euid set", cred)
+	}
+	// Production resolution never allows same-uid spawn: the
+	// supervisor's AllowSameUID escape exists for tests/dev only.
+	if cred.AllowSameUID {
+		t.Error("resolved credential allows same-uid spawn")
+	}
+}
+
+// testSupervisor builds a supervisor with the test process's own
+// identity plus the explicit test-only same-uid allowance.
+func testSupervisor(t *testing.T) *gateway.Supervisor {
+	t.Helper()
+	egid := uint32(os.Getegid())
+	s := gateway.NewSupervisor()
+	s.Agent = gateway.AgentCredential{
+		UID: uint32(os.Geteuid()), GID: egid, Groups: []uint32{egid},
+		IOGID: egid, Set: true, AllowSameUID: true,
+	}
+	return s
+}
+
+// TestCheckAgentDistinct (N1): boot refuses when the agent identity
+// equals the service identity — no same-user fallback, ever.
+func TestCheckAgentDistinct(t *testing.T) {
+	same := testSupervisor(t)
+	same.Agent.AllowSameUID = false // production shape
+	if err := checkAgentDistinct(same); err == nil {
+		t.Error("same-uid boot accepted, want refusal")
+	} else if !strings.Contains(err.Error(), "no same-user fallback") {
+		t.Errorf("err = %q, want same-user diagnostic", err)
+	}
+	other := testSupervisor(t)
+	other.Agent.UID++
+	if other.Agent.UID == 0 {
+		other.Agent.UID = 1
+	}
+	if err := checkAgentDistinct(other); err != nil {
+		t.Errorf("distinct identity refused: %v", err)
+	}
+}
+
+// TestCheckAgentSpawnSuccess (N1): the self-test passes when the
+// credential transition works.
+func TestCheckAgentSpawnSuccess(t *testing.T) {
+	if err := checkAgentSpawn(context.Background(), testSupervisor(t), "true"); err != nil {
+		t.Errorf("self-test with working drop refused: %v", err)
+	}
+}
+
+// TestCheckAgentSpawnEPERM (N1): an unprivileged service that cannot
+// drop to a different uid refuses boot with a privilege diagnostic.
+// As root the drop genuinely works, so the refusal case cannot run
+// there (covered instead by TestCheckAgentSpawnRealDrop).
+func TestCheckAgentSpawnEPERM(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can drop; refusal case needs an unprivileged uid")
+	}
+	s := testSupervisor(t)
+	s.Agent.AllowSameUID = false
+	s.Agent.UID++
+	if s.Agent.UID == 0 {
+		s.Agent.UID = 1
+	}
+	err := checkAgentSpawn(context.Background(), s, "true")
+	if err == nil {
+		t.Fatal("unprivileged different-uid boot accepted, want refusal")
+	}
+	if !strings.Contains(err.Error(), "operation not permitted") {
+		t.Errorf("err = %q, want EPERM diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "lacks privilege") {
+		t.Errorf("err = %q, want privilege diagnostic", err)
+	}
+}
+
+// TestCheckAgentSpawnRealDrop (N1, root-only): where privilege exists,
+// the self-test exercises a genuine different-uid transition.
+func TestCheckAgentSpawnRealDrop(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to prove a real uid transition")
+	}
+	nobody, err := user.Lookup("nobody")
+	if err != nil {
+		t.Skip("no nobody user; cannot test real drop")
+	}
+	uid, err := strconv.Atoi(nobody.Uid)
+	if err != nil {
+		t.Skip("bad nobody uid")
+	}
+	gid, err := strconv.Atoi(nobody.Gid)
+	if err != nil {
+		t.Skip("bad nobody gid")
+	}
+	s := gateway.NewSupervisor()
+	s.Agent = gateway.AgentCredential{
+		UID: uint32(uid), GID: uint32(gid), Groups: []uint32{uint32(gid)},
+		IOGID: uint32(gid), Set: true,
+	}
+	if err := checkAgentSpawn(context.Background(), s, "true"); err != nil {
+		t.Errorf("privileged drop refused: %v", err)
+	}
+}
+
+// TestCheckAgentSpawnIdentity (N1): the probe observes exactly the
+// configured uid/gid through the production spawn path (same-uid
+// test shape keeps caller groups by design — NoSetGroups).
+func TestCheckAgentSpawnIdentity(t *testing.T) {
+	s := testSupervisor(t)
+	// Capture via a probe script: the self-test takes the binary so
+	// tests can observe while production always passes "true".
+	probe := func() (string, error) {
+		p, err := s.Start(context.Background(), "id-probe", t.TempDir(), "sh",
+			[]string{"-c", "id -u; id -g"}, nil)
+		if err != nil {
+			return "", err
+		}
+		raw, rerr := io.ReadAll(p.Stdout())
+		_, werr := p.Wait()
+		if rerr != nil {
+			return "", rerr
+		}
+		if werr != nil {
+			return "", werr
+		}
+		return string(raw), nil
+	}
+	out, err := probe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || lines[0] != strconv.Itoa(os.Geteuid()) || lines[1] != strconv.Itoa(os.Getegid()) {
+		t.Errorf("child identity = %q, want euid/egid lines", out)
+	}
+}
+
+// runFlags builds a complete flag set for boot-path tests.
+func runFlags(t *testing.T, agentUser, ioGroup string) []string {
+	t.Helper()
+	state := t.TempDir()
+	keys := t.TempDir() // empty dir loads as zero keys; boot reaches the self-test first
+	return []string{
+		"--state-dir", state,
+		"--studio-url", "https://studio.example.test",
+		"--keys-dir", keys,
+		"--agent-user", agentUser,
+		"--io-group", ioGroup,
+	}
+}
+
+// TestRunRefusesSameUIDBoot (N1): the production readiness path cannot
+// bypass the distinctness check — booting with the agent user equal to
+// the service user refuses.
+func TestRunRefusesSameUIDBoot(t *testing.T) {
+	cur, err := user.Current()
+	if err != nil {
+		t.Skip("no current user")
+	}
+	gids, err := cur.GroupIds()
+	if err != nil || len(gids) == 0 {
+		t.Skip("no group ids")
+	}
+	g, err := user.LookupGroupId(gids[0])
+	if err != nil {
+		t.Skip("primary group unresolvable")
+	}
+	err = run(runFlags(t, cur.Username, g.Name))
+	if err == nil || !strings.Contains(err.Error(), "no same-user fallback") {
+		t.Errorf("err = %v, want same-user boot refusal", err)
+	}
+}
+
+// TestRunRefusesUnprivilegedBoot (N1): end-to-end boot refusal when the
+// credential drop fails (resolvable user, unprivileged service).
+func TestRunRefusesUnprivilegedBoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can drop; refusal case needs an unprivileged uid")
+	}
+	nobody, err := user.Lookup("nobody")
+	if err != nil {
+		t.Skip("no nobody user")
+	}
+	nogroup, err := user.LookupGroup("nogroup")
+	if err != nil {
+		t.Skip("no nogroup group")
+	}
+	err = run(runFlags(t, nobody.Username, nogroup.Name))
+	if err == nil || !strings.Contains(err.Error(), "boot refused") {
+		t.Errorf("err = %v, want boot refusal on drop failure", err)
 	}
 }

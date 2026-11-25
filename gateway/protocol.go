@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ProtocolV1 is the only protocol version Phase A speaks. Version
+// ProtocolV1 is the only protocol version in service. Version
 // negotiation rides the URL prefix (/gw/v1/...), so v2 can coexist later.
 const ProtocolV1 = "miniapp-gateway/1"
 
@@ -50,7 +50,7 @@ type Envelope struct {
 }
 
 // KeyProvider resolves the HMAC key for one build. Production binds keys to
-// builds (HKDF over an org secret) in Phase B; Phase A uses StaticProvider.
+// builds (KDF over an org secret); StaticProvider is test-only.
 type KeyProvider interface {
 	KeyFor(buildID string) ([]byte, error)
 }

@@ -107,6 +107,35 @@ func resolveAgent(agentUser, ioGroup string) (gateway.AgentCredential, error) {
 	}, nil
 }
 
+// checkAgentDistinct refuses boot when the configured agent identity
+// equals the service's own. Production has no same-user fallback:
+// the supervisor independently refuses such spawns (serve never sets
+// AllowSameUID), and this check fails first with a boot diagnostic.
+func checkAgentDistinct(runner *gateway.Supervisor) error {
+	if runner.Agent.UID == uint32(os.Geteuid()) {
+		return fmt.Errorf("gateway: boot refused: agent uid %d equals service uid (no same-user fallback; run the service privileged with a distinct agent user)", runner.Agent.UID)
+	}
+	return nil
+}
+
+// checkAgentSpawn is the boot-time credential-drop self-test: it
+// launches a harmless probe through the production supervisor using
+// the exact credential configuration real agent processes use, and
+// refuses boot unless the transition succeeds. The probe binary is a
+// parameter so tests can observe the child's identity; production
+// always passes "true". No keys are accessed or exposed.
+func checkAgentSpawn(ctx context.Context, runner *gateway.Supervisor, probe string, args ...string) error {
+	p, err := runner.Start(ctx, "boot-selftest", os.TempDir(), probe, args, nil)
+	if err != nil {
+		return fmt.Errorf("gateway: boot refused: agent spawn failed (%v); the service lacks privilege to drop to the agent identity", err)
+	}
+	code, err := p.Wait()
+	if err != nil || code != 0 {
+		return fmt.Errorf("gateway: boot refused: self-test probe exited %d (%v)", code, err)
+	}
+	return nil
+}
+
 // serve wires the gateway and runs until ctx ends: recover pre-restart
 // sessions first (so no detached agent keeps working silently), then
 // serve commands while the deliverer drains callbacks.
@@ -135,6 +164,16 @@ func serve(ctx context.Context, cfg config) error {
 	}
 	runner := gateway.NewSupervisor()
 	runner.Agent = cred
+	// Boot-time privilege self-test (N1): prove the service can
+	// actually drop to the agent identity before doing any recovery
+	// work or reporting ready. No readiness path bypasses this —
+	// serve() is the only route to listen().
+	if err := checkAgentDistinct(runner); err != nil {
+		return err
+	}
+	if err := checkAgentSpawn(ctx, runner, "true"); err != nil {
+		return err
+	}
 	adapter := &gateway.OpenCodeAdapter{
 		Runner: runner, Sessions: sessions, BinPath: cfg.binPath,
 		AgentUID: int(cred.UID), IOGID: int(cred.IOGID),

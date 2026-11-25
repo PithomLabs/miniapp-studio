@@ -50,8 +50,8 @@ green, then run the gates. Reuse the reviewer's probes at `/tmp/b1probe`
    Credential spawn works, groups applied), and mode assertions on
    every created path; the real different-uid drop is proved live by
    new runbook §7 checks (uid + key-read-denied). `setup.sh` gains the
-   inbox model (gateway-owned dir, group `studio-io`, mode 2730;
-   `answer.json` 0640 `studio-gw:studio-io`), staging 0600 + key
+   inbox model (gateway-EUID-owned dir per N1, group `studio-io`,
+   mode 2730; `answer.json` 0640, gateway-EUID-owned), staging 0600 + key
    cleanup after install, service PATH pinned to root-owned dirs, and
    uid discovery baked into the service command line
    (`--agent-uid/--agent-gid` flags on `cmd/gateway`; unset → refuse
@@ -142,7 +142,7 @@ green, then run the gates. Reuse the reviewer's probes at `/tmp/b1probe`
    sender-reconciliation requirement. Status keeps service-wide
    outbox counts (counts only, documented).
 9. **Minors ride with their components** (no separate churn pass):
-   M1 dir-fsync helper with F4's store work; M3/M4/M5 (SIGTERM +
+   M1 dir-fsync helper with F4's store work; M3/M4/M5-STDERR (SIGTERM +
    `WithoutCancel` spawn + shutdown signaling; process groups; stderr
    ring) with B1's supervisor work; M6/M7 (per-record skip, deterministic
    recovery ids, argv[0]+starttime reaper with Server boot time) with
@@ -153,6 +153,9 @@ green, then run the gates. Reuse the reviewer's probes at `/tmp/b1probe`
    M15 disposition starts from the existing `TestCallbackKDFWiring`
    (which already drives KDFProvider via config — the review's
    zero-reference claim is stale) and extends only proved gaps.
+   (N4 note: M5-STDERR here is the prompt10-review stderr minor,
+   implemented in Phase 1; M5-SSE — SSE stream lifetime from
+   prompt10 §7 — is a different, still-deferred item.)
 10. **Evidence honesty over completeness.** Matrix uses the five
     required states; `run.ts` claims are vendored (pinned excerpt +
     digest) if fetchable during execution, else explicitly marked
@@ -210,8 +213,9 @@ would execute the same logical work twice. Recovery rule:
   cannot provide the privilege, agent execution refuses; there is
   no same-uid fallback. Live identity + key-read-denied proof
   remains a Part 2 gate (runbook §7).
-- Inbox matrix: dir gateway-owned `studio-gw:studio-io` 2730;
-  `answer.json` gateway-owned 0640 (agent reads via group, sticky
+- Inbox matrix: dir gateway-EUID-owned (N1: service EUID observed
+  live, not the literal name `studio-gw`), group `studio-io`, 2730;
+  `answer.json` gateway-EUID-owned 0640 (agent reads via group, sticky
   bit + ownership stop replace/remove/overwrite); `question.json`
   agent-owned, required group-readable — the agent spawn wrapper
   pins umask 007 so drops land 0660 `studio-agent:studio-io`, and
@@ -228,7 +232,7 @@ would execute the same logical work twice. Recovery rule:
    reproduce P1–P4 against the original tree with `/tmp/b1probe`
    (re-derive from review §C if any probe bit-rotted). No fix lands
    without its red reproduction.
-2. **Phase 1 — B1 + supervisor minors (M3/M4/M5).** Credential
+2. **Phase 1 — B1 + supervisor minors (M3/M4/M5-STDERR).** Credential
    plumbing + fail-closed, linux/non-linux split, flags + wiring,
    `setup.sh` inbox/staging/PATH/uid work, `builder.md` false promise
    corrected. Tests: refusal, plumbing (`id` output), group

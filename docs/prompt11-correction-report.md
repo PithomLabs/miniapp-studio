@@ -36,10 +36,12 @@ same-user path. Unconfigured or non-allowed same-uid spawns refuse
 Different-uid spawns pin explicit non-empty groups
 (`NoSetGroups` only for same-uid — Go setgroups unconditionally,
 verified in the fork/exec source). Inbox model enforced at runtime:
-gateway-owned dir `studio-gw:studio-io` 2730, `.studio` 2750,
-workdirs 2770, answers 0640, agent umask pinned 007 via the spawn
-wrapper (drops land 0660). Staging locked to 0700/0600 at setup
-start, key copies deleted after install (verified absent).
+gateway-EUID-owned dir, `studio-io` group, 2730 (N1: the original
+text named `studio-gw` as owner — corrected; only setup-created
+paths carry that literal owner), `.studio` 2750, workdirs 2770,
+answers 0640, agent umask pinned 007 via the spawn wrapper (drops
+land 0660). Staging locked to 0700/0600 at setup start, key copies
+deleted after install (verified absent).
 Service PATH pinned to root-owned dirs; setup asserts its
 prerequisites; serve resolves agent/io identity by name and refuses
 boot on failure.
@@ -220,14 +222,19 @@ refuse/allow, CLI allowlist + formatter units.
 
 Evidence: unit + integration (real HTTP stubs).
 
-## 2. M1–M16 dispositions (all fixed, none carried)
+## 2. M1–M16 dispositions (prompt11 bundle all fixed, none carried)
+
+"All fixed" means the prompt11 correction bundle's findings,
+including M5-STDERR. M5-SSE (SSE stream lifetime) is NOT part of
+that bundle and remains deferred — see the N4 mapping in
+`docs/gateway-phase-b-evidence.md`.
 
 M1 dir-fsync on all three atomic stores + helper test. M2
 per-attempt deliverer timeout (component-level, hanging-stub
 test — stronger than wiring-only). M3 SIGTERM + spawn decoupled
 from request ctx + adapter Shutdown (cancel-spared + shutdown
 tests). M4 process-group spawn/kill + group reap with verified
-non-leader fallback (grandchild + fallback tests). M5 bounded
+non-leader fallback (grandchild + fallback tests). M5-STDERR bounded
 stderr ring (wedge + tail-cap tests). M6 partial recovery listing
 + emit-before-mark + deterministic ids + already-queued proceeds
 (skip + idempotence tests). M7 argv[0]-basename + starttime reaper
@@ -302,16 +309,65 @@ writable paths, all envelope payloads pre-verify. Protected:
 per-build HMAC keys, tenant builds/sessions, gateway state,
 co-located builds' files, callback integrity.
 
+### N1 service privilege contract (prompt12 residual closure)
+
+The `SysProcAttr.Credential` drop requires the Gateway service
+process to hold effective privileges sufficient to change to the
+configured agent UID/GID and supplementary groups. The contract:
+
+- The reference deployment runs the Gateway service privileged
+  (root), so the drop to `studio-agent` succeeds.
+- A non-root configuration is acceptable only when its effective
+  OS capabilities are independently demonstrated (boot self-test
+  green + live §7b proofs) to permit the complete credential
+  transition — uid, gid, AND supplementary groups.
+- A service running as `studio-gw` without that privilege must
+  not be assumed capable of launching `studio-agent`; boot
+  refuses instead.
+- Production never falls back to launching agents under its own
+  identity (boot distinctness check + supervisor refusal, both
+  without an AllowSameUID escape in the serve path).
+- Any unavailable or insufficient privilege fails closed with an
+  honest diagnostic (boot refusal / command refusal).
+- The Sprite service API has no user field; nothing invents one.
+
+Four identities — never interchangeable:
+
+1. Gateway service identity: the uid the gateway process runs as
+   (observed live from the process; privileged in reference).
+2. Agent process identity: `studio-agent` (dropped-to per spawn).
+3. Filesystem owner: whoever created the file — setup-created
+   paths carry setup-pinned owners (`studio-gw` keys, root
+   binary); gateway-created paths carry the service EUID.
+4. Shared I/O group: `studio-io`, the cross-identity meeting
+   point (group perms + setgid inheritance).
+
+Boot enforces the contract before recovery or readiness: serve()
+resolves and validates the agent UID/GID/groups, confirms the
+service identity is distinct, and spawns `true` through the exact
+production credential configuration, refusing boot on any
+failure (`checkAgentDistinct` + `checkAgentSpawn` in
+`cmd/gateway/main.go`; no readiness path bypasses them).
+
 | Actor | Resource | Read | Write | Delete/replace | Denial proved by |
 |---|---|---|---|---|---|
-| gateway | keys `0600 studio-gw` | yes | rotation via provision | authorized | — |
+| gateway | keys `0600`, setup-owned `studio-gw` | yes | rotation via provision | authorized | — |
 | agent | keys dir/files | NO (EACCES) | NO | NO | live §7b (fake: modes) |
-| agent | inbox `2730` | traverse | own drops | own only (sticky) | live §7b + unit modes |
-| agent | answer `0640` | yes (group) | NO | NO | live §7b + EEXIST tests |
-| gateway | question `0660 agent` | yes (group) | consume | yes (dir owner) | unit ownership tests |
-| agent | workdir `2770` | yes | yes | yes | scoped to app builder |
-| agent | gateway state `0700` | NO | NO | NO | modes |
+| agent | inbox `2730`, gateway-EUID-owned, `studio-io` | traverse | own drops | own only (sticky) | live §7b + unit modes |
+| agent | answer `0640`, gateway-EUID-owned, `studio-io` | yes (group) | NO | NO | live §7b + EEXIST tests |
+| gateway | question `0660 studio-agent` | yes (group) | consume | yes (dir owner) | unit ownership tests |
+| agent | workdir `2770`, gateway-EUID-owned, `studio-io` | yes | yes | yes | scoped to app builder |
+| agent | gateway state `0700`, gateway-EUID-owned | NO | NO | NO | modes |
 | anyone | staging post-setup | — | — | keys removed | runbook §6 check |
+
+"Gateway-EUID-owned" means owned by the gateway service's
+effective UID as observed live (runbook §7b derives it from
+`/proc/<pid>/status`), NOT the literal name `studio-gw`. Only
+setup-created paths (keys, binary) carry setup-pinned owners.
+(N1 correction: the original matrix hardcoded `studio-gw` for
+gateway-created files, which holds only if the service itself
+runs as that uid — precisely the configuration that cannot
+drop privileges.)
 
 Residual (disclosed, out of prompt11 scope): co-located builds
 share the agent uid, so a compromised agent can reach same-app
