@@ -83,6 +83,12 @@ func (s *Server) handleGatewayCallback(w http.ResponseWriter, r *http.Request) {
 			// Deterministic gateway-side bug (a question id reused
 			// under a fresh event id): retrying cannot help, so fail
 			// terminally instead of burning the outbox retry budget.
+			// The ingest txn rolled back, leaving no Studio row, so
+			// log identifiers for forensics — never the payload.
+			qid, _ := env.Payload["question_id"].(string)
+			s.logger.Warn("gateway callback conflicting question id",
+				"build", env.BuildID, "message", env.MessageID,
+				"question_id", qid)
 			writeCallback(w, http.StatusBadRequest, "bad gateway event")
 		default:
 			s.logger.Error("callback ingest failed", "build", env.BuildID,

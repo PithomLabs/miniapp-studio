@@ -50,7 +50,7 @@ var toolDefs = []toolDef{
 	{ToolConnectorsAttest, "Verify and attest a Custom API connection.", "",
 		`{"type":"object","properties":{"id":{"type":"string","maxLength":128},"provider":{"type":"string","maxLength":64},"type":{"type":"string","maxLength":32}},"required":["id","provider","type"],"additionalProperties":false}`},
 	{ToolActivityList, "List tenant audit events with redaction.", "",
-		`{"type":"object","properties":{"limit":{"type":"integer"},"cursor":{"type":"string","maxLength":32}},"additionalProperties":false}`},
+		`{"type":"object","properties":{"limit":{"type":"integer"},"cursor":{"type":"string","maxLength":32},"exclude":{"type":"array","items":{"type":"string","maxLength":128},"maxItems":16}},"additionalProperties":false}`},
 	{ToolConversationCreate, "Open one conversation.", "",
 		`{"type":"object","properties":{"title":{"type":"string","maxLength":256},"application_id":{"type":"string","maxLength":128}},"additionalProperties":false}`},
 	{ToolConversationGet, "Read one conversation with its builds and open questions.", "conversation_id",

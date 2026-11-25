@@ -253,6 +253,17 @@ The control plane should eventually enforce configurable concurrency and resourc
 
 Implement and measure per-tenant/operator stream budgets, maximum stream lifetime, bounded polling, reconnect backoff and reconnect-storm protection. Do not introduce fan-out infrastructure until measurements show it is needed.
 
+### 5.4 Provisioning completion signal (sender wake)
+
+Observed during Boundary B U5: the Studio sender learns about
+completed gateway provisioning only on its next scheduled poll,
+so dispatch after provisioning waits out the remainder of the
+hold interval. A durable provisioning-completed signal (an
+outbox row or equivalent, not an in-memory flag) with a
+notify-to-wake path would dispatch promptly; schedule polling
+stays as the recovery path, never removed. Deferred design
+record — polling is correct and convergent as specified.
+
 ---
 
 ## 6. Decisions retained from the consolidated review

@@ -13,10 +13,26 @@ import (
 	"github.com/PithomLabs/miniapp/runtime"
 	"github.com/PithomLabs/miniapp/testkit"
 	"github.com/PithomLabs/miniapp/testkit/stack"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PithomLabs/miniapp-studio/connector"
 	"github.com/PithomLabs/miniapp-studio/spec"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
+
+// runTestDB connects the framework stack to the isolated run database.
+// Never testkit.NewDB(t): it follows TEST_DATABASE_URL to the
+// bootstrap database, outside test isolation (invariant 7).
+func runTestDB(t *testing.T) *testkit.DB {
+	t.Helper()
+	dsn := testdb.RunDSN(t)
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return &testkit.DB{Pool: pool, DSN: dsn}
+}
 
 const (
 	regTenantA = "acme-workspace"
@@ -27,7 +43,7 @@ const (
 
 func assembleRunner(t *testing.T) (*stack.Assembled, *fakeReader) {
 	t.Helper()
-	db := testkit.NewDB(t)
+	db := runTestDB(t)
 	db.Truncate(t, "app.invocations", "app.audit_events")
 	binding := func(agent, tenant string) auth.Binding {
 		return auth.Binding{AgentID: agent, Authority: contract.Authority{

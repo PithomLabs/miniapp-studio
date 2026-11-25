@@ -6,49 +6,21 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
-// scratchDatabase creates an empty database and returns a DSN for it. The
-// name is always a test constant, never operator input. The database is
-// dropped when the test finishes.
-func scratchDatabase(t *testing.T, name string) string {
+// scratchDatabase creates an empty run-pattern database and returns a DSN
+// for it. Unique per call, so concurrent test processes never collide on
+// fixed scratch names. The database is dropped when the test finishes.
+// The name argument is kept for call-site readability; testdb generates
+// the actual name.
+func scratchDatabase(t *testing.T, _ string) string {
 	t.Helper()
-	ctx := context.Background()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
-	admin, err := store.NewPool(ctx, dsn, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS "`+name+`"`); err != nil {
-		t.Fatalf("drop scratch: %v", err)
-	}
-	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+name+`"`); err != nil {
-		t.Fatalf("create scratch: %v", err)
-	}
-	t.Cleanup(func() {
-		p, err := store.NewPool(ctx, dsn, 0)
-		if err != nil {
-			return
-		}
-		defer p.Close()
-		_, _ = p.Exec(ctx, `DROP DATABASE IF EXISTS "`+name+`" WITH (FORCE)`)
-	})
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return testdb.ScratchDSN(t)
 }
 
 // F12: New refuses a database that never ran Studio migrations.

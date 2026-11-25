@@ -1,0 +1,11 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">{{.Placeholder.Title}}</h1>
+<p class="sub">{{.Placeholder.Sub}}</p>
+<div class="card">
+<h3>Not built yet — honestly empty</h3>
+<p class="sub">This scene lands in {{.Placeholder.Phase}}. There is no data to show because the backend capability does not exist yet, and this Console will not fake it.</p>
+<div class="actions"><a class="btn" href="/console?scene=gallery{{with .Conversation}}&amp;conversation={{.id}}{{end}}">Back to gallery</a></div>
+</div>
+</div>
+{{end}}

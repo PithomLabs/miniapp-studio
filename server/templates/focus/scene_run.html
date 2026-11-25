@@ -1,0 +1,57 @@
+{{define "scene"}}
+<div class="scene">
+{{if .Conflict}}
+<div class="card bad"><h3>Answer conflicted — question no longer open</h3>
+<p style="color:var(--mut);font-size:13.5px;margin:4px 0 0">Question <span class="mono">{{.Conflict.asked}}</span> was superseded, expired, or withdrawn before your answer landed. Nothing was applied. The current open questions are below.</p></div>
+{{end}}
+{{if .FocusBuild}}
+{{$b := .FocusBuild}}
+<h1 class="title">Builder run — {{$b.status}}</h1>
+<p class="sub">Live builder activity for this conversation. A working builder is not a deployed product: the product Run stage stays unproven until Phase E wires real Runtime evidence.</p>
+<div class="card">
+<h3>Build <span class="mono">{{$b.build_id}}</span></h3>
+<div class="kv">
+<dt>Status</dt><dd><span class="tag {{.BuildTag}}">{{$b.status}}</span></dd>
+<dt>Turn</dt><dd>{{with $b.turn}}n={{.n}} · {{.status}}{{end}}</dd>
+<dt>Agent session</dt><dd class="mono">{{if $b.agent_session_ref}}{{$b.agent_session_ref}}{{else}}—{{end}}</dd>
+</div>
+<div class="devd">build {{$b.build_id}} · turn {{with $b.turn}}{{.id}}{{end}} · conv {{$b.conversation_id}}</div>
+</div>
+{{$qs := $b.open_questions}}
+{{if $qs}}
+<div class="card"><h3>Open questions ({{len $qs}})</h3>
+{{range $qs}}<div class="checkrow"><span class="c">?</span><div><strong>{{.kind}}</strong> — {{.body}}<div class="devd">{{.id}} · turn {{.turn_id}}</div><div class="actions"><button type="button" class="btn" data-reply-qid="{{.id}}" data-reply-kind="{{.kind}}">Reply on the Line</button></div></div></div>{{end}}
+</div>
+{{else}}
+<div class="card"><h3>No open questions</h3><p class="sub">The builder is working or finished. Its words appear in the Pulse as they land.</p></div>
+{{end}}
+{{with $b.expired_questions}}
+{{if .}}
+<div class="card"><h3>Expired questions</h3>
+{{range .}}<div class="checkrow"><span class="c" style="color:var(--warn)">✗</span><div><strong>{{.kind}}</strong> <span class="mono">{{.id}}</span><div>{{.expired_reason}}</div></div></div>{{end}}
+</div>
+{{end}}
+{{end}}
+{{with $b.commands}}
+{{if .}}
+<div class="card"><h3>Dispatch</h3>
+<div class="scroll"><table><thead><tr><th>Command</th><th>State</th><th>Attempts</th><th>Detail</th></tr></thead><tbody>
+{{range .}}<tr><td class="mono">{{.command_kind}}</td><td>{{if eq .state "acked"}}<span class="tag ok">acknowledged</span>{{else if eq .state "failed"}}{{if .exhausted}}<span class="tag bad">exhausted</span>{{else}}<span class="tag bad">failed</span>{{end}}{{else if eq .state "sending"}}<span class="tag warn">sending</span>{{else if and (eq .state "queued") (gt .attempts 0.0)}}<span class="tag warn">retrying</span>{{else}}<span class="tag mut">{{.state}}</span>{{end}}</td><td class="mono">{{.attempts}}</td><td style="font-size:12.5px">{{.reason}}</td></tr>{{end}}
+</tbody></table></div>
+</div>
+{{end}}
+{{end}}
+{{with $b.decisions}}
+{{if .}}
+<div class="card"><h3>Decisions</h3>
+{{range .}}<div class="checkrow"><span class="c">{{if eq .decision "approved"}}✓{{else}}✗{{end}}</span><div><strong>{{.decision}}</strong> on <span class="mono">{{.question_id}}</span> by {{.decided_by}}<div class="devd">{{.decided_at}}</div></div></div>{{end}}
+</div>
+{{end}}
+{{end}}
+{{else}}
+<h1 class="title">Run</h1>
+<p class="sub">No build in focus. Send a message on the Line to open one, or pick a conversation in the gallery.</p>
+<div class="actions"><a class="btn" href="/console?scene=gallery{{with .Conversation}}&amp;conversation={{.id}}{{end}}">Open gallery</a></div>
+{{end}}
+</div>
+{{end}}

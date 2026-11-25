@@ -83,8 +83,18 @@ func provision(ctx context.Context, f provisionFlags) error {
 		if err != nil {
 			return fmt.Errorf("provision: app role password: %w", err)
 		}
-		if err := store.EnsureAppRole(ctx, pool, password); err != nil {
-			return fmt.Errorf("provision: ensure app role: %w", err)
+		var exists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, store.AppRoleName,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("provision: role check: %w", err)
+		}
+		if !exists {
+			if err := store.EnsureAppRole(ctx, pool, password); err != nil {
+				return fmt.Errorf("provision: create app role: %w", err)
+			}
+		} else if err := store.RotateAppRole(ctx, pool, password); err != nil {
+			return fmt.Errorf("provision: rotate app role: %w", err)
 		}
 	} else {
 		var exists bool
@@ -95,6 +105,10 @@ func provision(ctx context.Context, f provisionFlags) error {
 		}
 		if !exists {
 			return fmt.Errorf("provision: role %q is missing; pass --app-role-password-file on first use", store.AppRoleName)
+		}
+		// An existing role meeting a new database still needs CONNECT.
+		if err := store.EnsureAppRoleConnect(ctx, pool); err != nil {
+			return fmt.Errorf("provision: app role connect: %w", err)
 		}
 	}
 	if err := store.UpsertOperator(ctx, pool, f.tenant, f.binding, true); err != nil {

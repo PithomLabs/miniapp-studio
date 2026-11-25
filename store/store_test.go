@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/PithomLabs/miniapp/testkit"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 // testEnv wires owner + application pools with fresh migrations. Tests share
@@ -23,30 +23,29 @@ type testEnv struct {
 	owner  *pgxpool.Pool
 	app    *pgxpool.Pool
 	appDSN string
+	dsn    string
 	store  *Store
 }
 
 func setupTestEnv(t *testing.T) testEnv {
 	t.Helper()
 	ctx := context.Background()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
+	// U5.12: the suite shares one isolated run database per test
+	// process and exercises application behavior as the test role.
+	// Nothing here touches the live role's credential.
+	dsn := testdb.RunDSN(t)
 	owner, err := NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatalf("owner pool: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	testkit.MigrateUp(t, dsn)
-	pass := randomHexForTest(t, 32)
-	if err := EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
-	appDSN := dsnForUser(t, dsn, AppRoleName, pass)
 	if err := Migrate(ctx, dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
+	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+		t.Fatalf("GrantTestPrivileges: %v", err)
+	}
+	appDSN := testdb.AppDSN(t, dsn)
 	app, err := NewPool(ctx, appDSN, 0)
 	if err != nil {
 		t.Fatalf("app pool: %v", err)
@@ -56,7 +55,7 @@ func setupTestEnv(t *testing.T) testEnv {
 		studio.app_specs, studio.deployments, studio.runs`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	return testEnv{owner: owner, app: app, appDSN: appDSN, store: New(app)}
+	return testEnv{owner: owner, app: app, appDSN: appDSN, dsn: dsn, store: New(app)}
 }
 
 func randomHexForTest(t *testing.T, n int) string {
@@ -89,7 +88,7 @@ func mustUpsertOperator(t *testing.T, env testEnv, tenant, binding string) {
 
 func TestMigrateIdempotent(t *testing.T) {
 	env := setupTestEnv(t)
-	if err := Migrate(context.Background(), os.Getenv("TEST_DATABASE_URL")); err != nil {
+	if err := Migrate(context.Background(), env.dsn); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
 	var version uint
@@ -263,6 +262,18 @@ func TestRoleAttributes(t *testing.T) {
 	check(`SELECT has_function_privilege('studio_app', 'studio.session_lookup(text)', 'EXECUTE')`, true, "app executes lookup")
 	check(`SELECT NOT has_function_privilege('studio_app', 'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
 		true, "app cannot execute operator_upsert")
+	// U5.12: the test role carries the identical attribute shape.
+	check(`SELECT NOT rolbypassrls FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'`, true, "test NOBYPASSRLS")
+	check(`SELECT rolcanlogin FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'`, true, "test LOGIN")
+	check(`SELECT NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
+		WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'))`,
+		true, "no memberships for test role")
+	check(`SELECT NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner
+		WHERE r.rolname = '`+testdb.TestRoleName+`')`, true, "test owns no objects")
+	check(`SELECT has_function_privilege('`+testdb.TestRoleName+`', 'studio.session_lookup(text)', 'EXECUTE')`,
+		true, "test executes lookup")
+	check(`SELECT NOT has_function_privilege('`+testdb.TestRoleName+`', 'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
+		true, "test cannot execute operator_upsert")
 	for _, table := range []string{"operators", "sessions", "apps", "app_specs", "deployments", "runs",
 		"conversations", "messages", "builds", "turns", "questions",
 		"commands", "events", "conversation_stream", "artifacts", "approvals"} {

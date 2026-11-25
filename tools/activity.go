@@ -12,8 +12,9 @@ import (
 )
 
 type activityListIn struct {
-	Limit  int    `json:"limit"`
-	Cursor string `json:"cursor"`
+	Limit   int      `json:"limit"`
+	Cursor  string   `json:"cursor"`
+	Exclude []string `json:"exclude"`
 }
 
 // activityList exposes tenant-scoped framework audit events with keyset
@@ -38,6 +39,14 @@ func (d Deps) activityList(_ context.Context, call registry.ToolCall) (json.RawM
 			return nil, errInvalidArguments()
 		}
 	}
+	if len(in.Exclude) > 16 {
+		return nil, errInvalidArguments()
+	}
+	for _, tool := range in.Exclude {
+		if tool == "" || len(tool) > 128 {
+			return nil, errInvalidArguments()
+		}
+	}
 	// The listing excludes its own dispatch record: the runtime audits every
 	// invocation including this read, and showing the observer would make
 	// the empty state unreachable. The record itself still exists.
@@ -45,9 +54,18 @@ func (d Deps) activityList(_ context.Context, call registry.ToolCall) (json.RawM
 		FROM app.audit_events WHERE tenant_id = $1
 		AND (invocation_id IS NULL OR invocation_id::TEXT <> $2)`
 	args := []any{tenant, call.InvocationID}
+	next := 3
 	if cursor > 0 {
 		query += ` AND id < $3`
 		args = append(args, cursor)
+		next = 4
+	}
+	// Exclusion applies inside the query so the limit counts kept
+	// rows: filtering after the limit would starve real receipts
+	// behind high-frequency transport records (SSE polls).
+	if len(in.Exclude) > 0 {
+		query += ` AND NOT (tool = ANY($` + strconv.Itoa(next) + `::text[]))`
+		args = append(args, in.Exclude)
 	}
 	query += ` ORDER BY id DESC LIMIT ` + strconv.Itoa(limit)
 	rows, err := call.Tx.Query(call.Context, query, args...)

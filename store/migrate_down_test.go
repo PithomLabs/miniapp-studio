@@ -71,13 +71,6 @@ func TestRLSEnable000016(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	pass, err := RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
 	if err := Migrate(ctx, dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
@@ -111,13 +104,6 @@ func TestMigrateDownRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	pass, err := RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
 	if err := Migrate(ctx, dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}

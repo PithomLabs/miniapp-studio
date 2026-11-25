@@ -2,11 +2,11 @@ package store
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func insertApp(t *testing.T, env testEnv, tenant, id, slug string) {
@@ -109,20 +109,111 @@ func TestProvisionIdempotent(t *testing.T) {
 	if _, _, err := env.store.Create(ctx, "t1", "op1", time.Now()); err != nil {
 		t.Errorf("session after reactivate refused: %v", err)
 	}
-	// Role creation is idempotent; rotation takes effect for new connections.
-	fresh := randomHexForTest(t, 32)
-	if err := EnsureAppRole(ctx, env.owner, fresh); err != nil {
+	// U5.12 invariant 1: re-ensuring the live role never changes its
+	// password. The old password keeps working; the ignored value does
+	// not. (The Boundary B a1 abort is the red-before for the old
+	// rotate-on-boot behavior; this assertion is the green-after.)
+	decoy := randomHexForTest(t, 32)
+	if err := EnsureAppRole(ctx, env.owner, decoy); err != nil {
 		t.Fatalf("EnsureAppRole again: %v", err)
 	}
-	rotated, err := NewPool(ctx, dsnForUser(t, os.Getenv("TEST_DATABASE_URL"), AppRoleName, fresh), 0)
+	decoyPool, err := NewPool(ctx, dsnForUser(t, env.dsn, AppRoleName, decoy), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer decoyPool.Close()
+	if err := decoyPool.Ping(ctx); err == nil {
+		t.Error("ignored decoy password authenticates: re-ensure rotated the live credential")
+	}
+	// The rotation MECHANISM is proven against a scratch role so the
+	// suite never mutates a persistent credential (invariant 2 Scope).
+	probe := "studio_u512_probe_" + randomHexForTest(t, 4)
+	passA, passB := randomHexForTest(t, 32), randomHexForTest(t, 32)
+	if _, err := env.owner.Exec(ctx, `CREATE ROLE `+probe+` WITH LOGIN NOBYPASSRLS PASSWORD '`+passA+`'`); err != nil {
+		t.Fatalf("create probe role: %v", err)
+	}
+	defer func() { _, _ = env.owner.Exec(ctx, `DROP ROLE IF EXISTS `+probe) }()
+	grantConnectDB(t, env.owner, probe)
+	if err := rotateRolePassword(ctx, env.owner, probe, passB); err != nil {
+		t.Fatalf("rotate probe: %v", err)
+	}
+	rotated, err := NewPool(ctx, dsnForUser(t, env.dsn, probe, passB), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rotated.Close()
 	if err := rotated.Ping(ctx); err != nil {
-		t.Errorf("rotated credential cannot connect: %v", err)
+		t.Errorf("rotated probe credential cannot connect: %v", err)
+	}
+	stale, err := NewPool(ctx, dsnForUser(t, env.dsn, probe, passA), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	if err := stale.Ping(ctx); err == nil {
+		t.Error("pre-rotation probe credential still connects, want rejection")
+	}
+	if err := rotateRolePassword(ctx, env.owner, probe, "not-hex!"); err == nil {
+		t.Error("non-hex rotation accepted, want refusal")
+	}
+	if err := rotateRolePassword(ctx, env.owner, "studio_u512_probe_missing", passB); err == nil {
+		t.Error("rotation of a missing role accepted, want refusal")
 	}
 	if err := EnsureAppRole(ctx, env.owner, "not-hex!"); err == nil {
 		t.Error("non-hex password accepted, want refusal")
+	}
+}
+
+// grantConnectDB gives a scratch login role CONNECT on the current
+// database so dial assertions test the password, not the grant.
+func grantConnectDB(t *testing.T, owner *pgxpool.Pool, role string) {
+	t.Helper()
+	var dbname string
+	if err := owner.QueryRow(context.Background(), `SELECT current_database()`).Scan(&dbname); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Exec(context.Background(),
+		`GRANT CONNECT ON DATABASE `+pgx.Identifier{dbname}.Sanitize()+` TO `+role); err != nil {
+		t.Fatalf("connect for %s: %v", role, err)
+	}
+}
+
+// TestCreateOnceNeverReplacesPassword pins invariant 1 on the exact
+// primitive EnsureAppRole uses: the first creation wins, and every
+// later call with a different password is a no-op for the credential.
+func TestCreateOnceNeverReplacesPassword(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx := context.Background()
+	role := "studio_u512_once_" + randomHexForTest(t, 4)
+	passA, passB := randomHexForTest(t, 32), randomHexForTest(t, 32)
+	defer func() { _, _ = env.owner.Exec(ctx, `DROP ROLE IF EXISTS `+role) }()
+	created, err := createRoleOnce(ctx, env.owner, role, passA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("first create reported no creation")
+	}
+	grantConnectDB(t, env.owner, role)
+	created, err = createRoleOnce(ctx, env.owner, role, passB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Error("second create reported creation, want convergence")
+	}
+	dial := func(pass string) error {
+		p, err := NewPool(ctx, dsnForUser(t, env.dsn, role, pass), 0)
+		if err != nil {
+			return err
+		}
+		defer p.Close()
+		return p.Ping(ctx)
+	}
+	if err := dial(passA); err != nil {
+		t.Errorf("original password rejected after re-ensure: %v", err)
+	}
+	if err := dial(passB); err == nil {
+		t.Error("second password authenticates: re-ensure replaced the credential")
 	}
 }

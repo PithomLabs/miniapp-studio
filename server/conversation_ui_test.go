@@ -108,6 +108,28 @@ func TestAnswerConflict409(t *testing.T) {
 	}
 }
 
+func TestAnswerAfterTerminalExpiry409(t *testing.T) {
+	srv := callbackServer(t)
+	cookie := login(t, srv, testToken)
+	_, build := setupBuild(t, srv, testTenant)
+	postCallback(t, srv, signedCallback(t, build, testTenant,
+		"tx-s", "agent.started", map[string]any{}))
+	postCallback(t, srv, signedCallback(t, build, testTenant,
+		"tx-q", "agent.question", map[string]any{"question_id": "tx-1", "body": "Late?"}))
+	postCallback(t, srv, signedCallback(t, build, testTenant,
+		"tx-done", "agent.completed", map[string]any{}))
+	// The terminal expired the open question: answering it 409s with
+	// the durable cause instead of resurrecting a dead build.
+	rec := doRequest(t, srv, http.MethodPost, "/questions/tx-1/answer",
+		(&url.Values{"opkey": {opkeyForTest(t)}, "answer": {"x"}, "build_id": {build}}).Encode(), cookie)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("post-terminal answer = %d, want 409", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "no longer open") {
+		t.Errorf("conflict page = %q", body)
+	}
+}
+
 func TestConversationCrossTenantUI(t *testing.T) {
 	srv, _ := testServer(t)
 	cookieA := login(t, srv, testToken)

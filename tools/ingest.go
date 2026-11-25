@@ -26,7 +26,10 @@ const (
 	evtCancelledAck         = "agent.cancelled_ack"
 )
 
-func terminalBuild(status string) bool {
+// TerminalBuild reports whether a build status is terminal. Exported so
+// the sender's claim guard and ingest share one definition of death;
+// the state table in tools/build.go remains the owner of legal edges.
+func TerminalBuild(status string) bool {
 	return status == buildSucceeded || status == buildFailed || status == buildCancelled
 }
 
@@ -100,12 +103,12 @@ func (d Deps) buildIngestEvent(ctx context.Context, call registry.ToolCall) (jso
 		}
 		return nil, dbErr(err, "")
 	}
-	seq, err := appendStream(ctx, call.Tx, tenant, b.ConversationID, "event", in.EventID, in.BuildID)
+	seq, err := AppendStream(ctx, call.Tx, tenant, b.ConversationID, "event", in.EventID, in.BuildID)
 	if err != nil {
 		return nil, err
 	}
 	transitioned := false
-	if !terminalBuild(b.Status) {
+	if !TerminalBuild(b.Status) {
 		transitioned, err = applyEvent(ctx, call, tenant, b, in)
 		if err != nil {
 			return nil, err
@@ -151,10 +154,52 @@ func applyEvent(ctx context.Context, call registry.ToolCall, tenant string, b bu
 			// The run finished before its started arrived (lost or
 			// reordered): step through running so the terminal state
 			// applies instead of stranding the build assigned forever.
+			// Trust assumption (ratified Boundary A §C): an
+			// HMAC-authenticated terminal proves the run it names.
+			// Out-of-band drives can move builds Studio didn't
+			// dispatch — convergent via sender reconcile, never
+			// silent — and absorbing instead would strand.
 			if err := transitionBuild(ctx, call.Tx, tenant, b.ID, buildRunning); err != nil {
 				return false, err
 			}
 			status = buildRunning
+		}
+		if status == buildWaitingUser {
+			// Terminal arrived while an answer was outstanding: the
+			// run is over, so the open question can never be
+			// answered. Expire it with a durable cause (a later
+			// answer conflicts honestly) instead of absorbing and
+			// stranding the build waiting forever. The build steps
+			// through running — same txn, invisible — because the
+			// edge table has no waiting-to-terminal edge.
+			to := buildSucceeded
+			if in.Type == evtFailed {
+				to = buildFailed
+			}
+			cause := fmt.Sprintf("terminal %s arrived while awaiting answer (event %s)", in.Type, in.EventID)
+			if _, err := call.Tx.Exec(ctx,
+				`UPDATE studio.questions SET status = 'expired', expired_reason = $1
+				 WHERE tenant_id = $2 AND build_id = $3 AND status = 'open'`,
+				cause, tenant, b.ID); err != nil {
+				return false, dbErr(err, "")
+			}
+			cur, err := currentTurn(ctx, call.Tx, tenant, b.ID)
+			if err != nil {
+				return false, err
+			}
+			if cur.Status == turnWaitingUser {
+				if err := transitionTurn(ctx, call.Tx, tenant, cur.ID, turnExpired); err != nil {
+					return false, err
+				}
+			} else if cur.Status != turnClosed && cur.Status != turnExpired {
+				if err := transitionTurn(ctx, call.Tx, tenant, cur.ID, turnClosed); err != nil {
+					return false, err
+				}
+			}
+			if err := transitionBuild(ctx, call.Tx, tenant, b.ID, buildRunning); err != nil {
+				return false, err
+			}
+			return true, transitionBuild(ctx, call.Tx, tenant, b.ID, to)
 		}
 		if status != buildRunning {
 			return false, nil
@@ -199,6 +244,11 @@ func applyEvent(ctx context.Context, call registry.ToolCall, tenant string, b bu
 // whose started event was lost or reordered, so the build steps through
 // running to waiting instead of stranding the agent on a question Studio
 // never parks. Anything else records history without touching turns.
+//
+// Trust assumption (ratified Boundary A §C): an HMAC-authenticated yield
+// implies a live run. Out-of-band drives can park questions for runs
+// Studio didn't dispatch; those converge via the sender's
+// status-reconcile supersede rather than failing silently.
 func applyYield(ctx context.Context, call registry.ToolCall, tenant string, b buildRow, in ingestIn) (bool, error) {
 	status := b.Status
 	if status == buildAssigned {

@@ -116,6 +116,69 @@ func TestActivityList(t *testing.T) {
 	invokeErr(t, h, ToolActivityList, mustJSON(t, map[string]any{"cursor": "nope"}), "e-8", toolCredA)
 }
 
+func TestActivityListExclude(t *testing.T) {
+	h := setupFakes(t)
+	createApp(t, h, toolCredA, toolTenantA, "shop", "x-1")
+	full := invoke(t, h, ToolActivityList, map[string]any{"limit": 50}, "x-2", toolCredA)
+	all, _ := full["events"].([]any)
+	if len(all) == 0 {
+		t.Fatal("no events without exclusion")
+	}
+	filtered := invoke(t, h, ToolActivityList,
+		map[string]any{"limit": 50, "exclude": []string{"app.create"}}, "x-3", toolCredA)
+	kept, _ := filtered["events"].([]any)
+	for _, e := range kept {
+		if e.(map[string]any)["tool"] == "app.create" {
+			t.Fatalf("excluded tool present: %v", e)
+		}
+	}
+	// Unknown tools exclude nothing; oversized lists refuse.
+	invoke(t, h, ToolActivityList, map[string]any{"limit": 50, "exclude": []string{"nope"}}, "x-4", toolCredA)
+	invokeErr(t, h, ToolActivityList, mustJSON(t, map[string]any{"exclude": []string{""}}), "x-5", toolCredA)
+	big := make([]string, 17)
+	for i := range big {
+		big[i] = "x"
+	}
+	invokeErr(t, h, ToolActivityList, mustJSON(t, map[string]any{"exclude": big}), "x-6", toolCredA)
+}
+
+func TestActivityListSurvivesStreamPollFlood(t *testing.T) {
+	// Guardrail 2: transport polling must not displace business
+	// receipts. Every audit row below is written through the real
+	// Miniapp runtime invocation path (h.invoke), never inserted
+	// directly — this is the complete behavior being claimed.
+	h := setupFakes(t)
+	conv := createConversation(t, h, "f-1", toolCredA)
+	for i := 0; i < 40; i++ {
+		invoke(t, h, ToolConversationStream,
+			map[string]any{"conversation_id": conv, "after_seq": 0},
+			"f-poll-"+string(rune('a'+i/26))+string(rune('a'+i%26)), toolCredA)
+	}
+	// 40 polls x 2 rows each = 80 stream rows; the unfiltered page
+	// of 50 physically cannot contain the conversation.create
+	// receipt anymore.
+	plain := invoke(t, h, ToolActivityList, map[string]any{"limit": 50}, "f-2", toolCredA)
+	for _, e := range plain["events"].([]any) {
+		if e.(map[string]any)["tool"] == "conversation.create" {
+			t.Fatal("unfiltered page unexpectedly still holds the receipt; test proves nothing")
+		}
+	}
+	filtered := invoke(t, h, ToolActivityList,
+		map[string]any{"limit": 50, "exclude": []string{"conversation.stream"}}, "f-3", toolCredA)
+	found := false
+	for _, e := range filtered["events"].([]any) {
+		if e.(map[string]any)["tool"] == "conversation.create" {
+			found = true
+		}
+		if e.(map[string]any)["tool"] == "conversation.stream" {
+			t.Fatalf("excluded tool present: %v", e)
+		}
+	}
+	if !found {
+		t.Fatal("business receipt missing from filtered page under poll flood")
+	}
+}
+
 func TestActivityScrubbing(t *testing.T) {
 	h := setupFakes(t)
 	ctx := context.Background()

@@ -16,6 +16,7 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/fly"
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 	"github.com/PithomLabs/miniapp/testkit"
 )
 
@@ -39,11 +40,7 @@ func testServer(t *testing.T) (*Server, Config) {
 // testServerWith additionally injects Fly managers (fakes in tests).
 func testServerWith(t *testing.T, sprites fly.SpriteManager, conns fly.ConnectorManager) (*Server, Config) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
-	return testServerOn(t, dsn, sprites, conns)
+	return testServerOn(t, testdb.RunDSN(t), sprites, conns)
 }
 
 // testServerOn builds the same server against an explicit database. The F12
@@ -66,15 +63,13 @@ func bootServerOn(t *testing.T, dsn string, sprites fly.SpriteManager, conns fly
 		t.Fatal(err)
 	}
 	t.Cleanup(owner.Close)
-	pass, err := store.RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
 	if err := store.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+	// Idempotent: the run database already carries the mirror, and
+	// scratch F12 databases gain it right after their own migrate.
+	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+		t.Fatalf("GrantTestPrivileges: %v", err)
 	}
 	if truncate {
 		if _, err := owner.Exec(ctx, `TRUNCATE studio.sessions, studio.operators, studio.apps,
@@ -136,11 +131,7 @@ func bootServerOn(t *testing.T, dsn string, sprites fly.SpriteManager, conns fly
 	if err := os.WriteFile(grantsFile, grantsRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	appDSN := dsn
-	if parsed, err := url.Parse(dsn); err == nil {
-		parsed.User = url.UserPassword(store.AppRoleName, pass)
-		appDSN = parsed.String()
-	}
+	appDSN := testdb.AppDSN(t, dsn)
 	cfg := Config{
 		ListenAddr: "127.0.0.1:0", DatabaseURL: appDSN, OwnerDatabaseURL: dsn,
 		FrameworkKeys: keysFile, FrameworkGrants: grantsFile,
@@ -254,7 +245,7 @@ func TestLoginRejectsBadToken(t *testing.T) {
 func TestLoginUnprovisionedOperator401(t *testing.T) {
 	srv, _ := testServer(t)
 	ctx := context.Background()
-	owner, err := store.NewPool(ctx, os.Getenv("TEST_DATABASE_URL"), 0)
+	owner, err := store.NewPool(ctx, testdb.RunDSN(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

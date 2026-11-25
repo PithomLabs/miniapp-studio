@@ -17,32 +17,27 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/server"
 	"github.com/PithomLabs/miniapp-studio/store"
-	"github.com/PithomLabs/miniapp/testkit"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 // provisionDB prepares the shared test database idempotently and reserves
 // the provision-test tenants, removing their rows before and after.
 func provisionDB(t *testing.T) string {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
-	testkit.MigrateUp(t, dsn)
+	// U5.12: isolated run database, already migrated with both roles.
+	// The suite never provisions role passwords (see TestProvision*
+	// below, which exercise the no-password operator/file paths).
+	dsn := testdb.RunDSN(t)
 	ctx := context.Background()
 	owner, err := store.NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pass, err := store.RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
 	if err := store.Migrate(ctx, dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+		t.Fatalf("GrantTestPrivileges: %v", err)
 	}
 	clean := func() {
 		_, _ = owner.Exec(ctx, `DELETE FROM studio.operators WHERE tenant_id IN ('t-prov','t-prov-b')`)
@@ -100,14 +95,15 @@ func TestProvisionFresh(t *testing.T) {
 	dsn := provisionDB(t)
 	dir := t.TempDir()
 	tokenFile := writeSecret(t, "token", "prov-token-1\n")
-	passFile := writeSecret(t, "pass", mustHex(t)+"\n")
 	dsnFile := writeSecret(t, "dsn", dsn+"\n")
 	opsFile := filepath.Join(dir, "operators.json")
+	// No --app-role-password-file: the role pre-exists and the suite
+	// must never rotate it (U5.12 invariant 2). This exercises the
+	// operator-row + operators-file provisioning path.
 	err := runProvision([]string{
 		"--tenant", "t-prov", "--binding", "prov-op",
 		"--framework-credential", "prov-svc",
 		"--login-token-file", tokenFile,
-		"--app-role-password-file", passFile,
 		"--operators-file", opsFile,
 		"--dsn-file", dsnFile,
 	})
@@ -146,12 +142,10 @@ func TestProvisionRotationAndIdempotency(t *testing.T) {
 	prov := func(tenant, binding, token string) {
 		t.Helper()
 		tokenFile := writeSecret(t, "token", token+"\n")
-		passFile := writeSecret(t, "pass", mustHex(t)+"\n")
 		if err := runProvision([]string{
 			"--tenant", tenant, "--binding", binding,
 			"--framework-credential", "svc-" + tenant,
 			"--login-token-file", tokenFile,
-			"--app-role-password-file", passFile,
 			"--operators-file", opsFile,
 			"--dsn-file", writeSecret(t, "dsn", dsn),
 		}); err != nil {
@@ -183,15 +177,6 @@ func TestProvisionRotationAndIdempotency(t *testing.T) {
 	if !operatorActive(t, dsn, "t-prov") || !operatorActive(t, dsn, "t-prov-b") {
 		t.Error("operator rows missing after rotation")
 	}
-}
-
-func mustHex(t *testing.T) string {
-	t.Helper()
-	hexPass, err := store.RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return hexPass
 }
 
 // F13: redaction removes the DSN password and preserves clean errors
@@ -243,21 +228,10 @@ func TestServeHappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	pass, err := store.RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatal(err)
-	}
 	if err := store.UpsertOperator(ctx, owner, "t-prov", "prov-op", true); err != nil {
 		t.Fatal(err)
 	}
-	appDSN := dsn
-	if parsed, perr := url.Parse(dsn); perr == nil {
-		parsed.User = url.UserPassword(store.AppRoleName, pass)
-		appDSN = parsed.String()
-	}
+	appDSN := testdb.AppDSN(t, dsn)
 	sum := sha256.Sum256([]byte("serve-token"))
 	cfg := server.Config{
 		ListenAddr: "127.0.0.1:0", DatabaseURL: appDSN,

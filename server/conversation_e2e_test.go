@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +12,12 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/gateway"
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 func ownerPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	pool, err := store.NewPool(context.Background(), os.Getenv("TEST_DATABASE_URL"), 0)
+	pool, err := store.NewPool(context.Background(), testdb.RunDSN(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,11 +170,8 @@ func TestPhaseARestartRecovery(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
-	srv2, _ := bootServerOn(t, dsn, nil, nil, false, nil)
+	// Fresh server, same run database, no truncate: the restart.
+	srv2, _ := bootServerOn(t, testdb.RunDSN(t), nil, nil, false, nil)
 	srv2.gwKeys = gateway.StaticProvider{}
 	srv2.ssePoll = 10 * time.Millisecond
 

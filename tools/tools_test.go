@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/fly"
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 const (
@@ -48,26 +48,16 @@ func setupTools(t *testing.T, sprites fly.SpriteManager, conns fly.ConnectorMana
 func setupToolsDeps(t *testing.T, deps Deps) harness {
 	t.Helper()
 	ctx := context.Background()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
+	// U5.12: isolated run database; the live role is never touched.
+	dsn := testdb.RunDSN(t)
+	if err := store.Migrate(ctx, dsn); err != nil {
+		t.Fatalf("Migrate: %v", err)
 	}
-	testkit.MigrateUp(t, dsn)
 	owner, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(owner.Close)
-	pass, err := store.RandomHex(32)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
-	if err := store.Migrate(ctx, dsn); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
 	for _, stmt := range []string{
 		`TRUNCATE app.invocations, app.audit_events`,
 		`TRUNCATE studio.sessions, studio.operators, studio.apps, studio.app_specs, studio.deployments, studio.runs`,
@@ -94,7 +84,11 @@ func setupToolsDeps(t *testing.T, deps Deps) harness {
 		},
 	)
 	st := stack.Assemble(t, stack.Config{
-		DB:     testkit.NewDB(t),
+		// The Service shares the run database: tool writes and the
+		// harness owner pool observe the same rows. Never
+		// testkit.NewDB(t) here — it follows the environment to the
+		// bootstrap database, outside test isolation.
+		DB:     &testkit.DB{Pool: owner, DSN: dsn},
 		Policy: policy,
 		Register: func(t *testing.T, reg *registry.Registry) {
 			if err := Register(reg, deps); err != nil {

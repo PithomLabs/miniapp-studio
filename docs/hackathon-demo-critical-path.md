@@ -39,7 +39,9 @@ surface; backend and Focus Console tracked separately):
 
 1. **Owner describes the Invoice Review Desk requirement.**
    Backend: `implemented` (`conversation.create`,
-   `message.send`, tools + tests). Console Line: `missing`.
+   `message.send`, tools + tests). Console Line: `implemented`
+   (Boundary B; see `docs/prompt21-boundary-b.md` §3 — live-verified
+   against the stub gateway, B1+B2).
 2. **Studio creates the conversation and build.** `implemented`
    (`conversation.create`, `build.create`, tenant isolation).
 3. **Gateway routes work to the correct Builder.**
@@ -54,13 +56,18 @@ surface; backend and Focus Console tracked separately):
    v1.19.6, live P-G3 pending).
 6. **Studio persists and renders the question in the original
    conversation.** Persist: `implemented`. Render:
-   `legacy-ui` (`conversation.html`) / Console Pulse: `missing`.
+   `legacy-ui` (`conversation.html`) / Console Pulse: `implemented`
+   (Boundary B; see `docs/prompt21-boundary-b.md` §3 — question
+   streamed live via SSE, screenshots `docs/boundary-b/`).
 7. **Owner answers.** `implemented` (`question.answer` with
-   conflict handling).
+   conflict handling; Console 409 banner + double-submit fencing
+   live-verified, see `docs/prompt21-boundary-b.md` §3).
 8. **The same OpenCode session consumes the answer and
-   continues.** `missing` (no Studio→Gateway continue-dispatch
-   sender loop exists — verified absent) + `live-unverified`
-   (gateway resume path). **This is the Phase C crux.**
+   continues.** Sender loop: `implemented` (Boundary B; continue
+   turns from gateway-acked turns + reconcile, live-verified
+   against the stub gateway) + `live-unverified` (real Builder
+   resume path; Part 2 + C5 still required). **This remains the
+   Phase C live-proof crux.**
 9. **Agent produces a Go/Miniapp artifact and MiniappSpec.**
    Spec validation: `implemented` (`spec.validate`,
    runner admission). Agent-produced artifact pipeline:
@@ -71,9 +78,11 @@ surface; backend and Focus Console tracked separately):
     report: `missing`.
 11. **Owner reviews changes and approves or requests rework.**
     Decision primitives: `implemented` (Miniapp runtime
-    approval support, P0-tested). Artifact review/approval
-    experience: `missing` (conversation-level approval
-    rendering is `legacy-ui` only).
+    approval support, P0-tested). Conversation-level approval
+    rendering: Console `implemented` (Boundary B receipts table
+    with gate-ledger + transport-noise disclosures, see
+    `docs/prompt21-boundary-b.md` §3). Artifact review/approval
+    experience: `missing` (Phase D).
 12. **Approved artifact deploys to a separate Runtime Sprite.**
     [iff Phase E is selected for the judging demo — owner decision]
     `fake-backed` (`deploy.provision` P3-era app deploy) +

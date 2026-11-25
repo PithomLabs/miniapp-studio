@@ -191,7 +191,8 @@ func transitionTurn(ctx context.Context, tx pgx.Tx, tenantID, turnID, to string)
 	return nil
 }
 
-// appendStream adds one cursor row for a message or event, allocating the
+// AppendStream adds one cursor row for a message, event, or dispatch
+// outcome, allocating the
 // per-conversation sequence transactionally with the source insert. The
 // advisory lock serializes allocators per conversation; the sequence is
 // monotonic (aborted transactions can leave gaps, which cursor replay
@@ -206,7 +207,7 @@ func transitionTurn(ctx context.Context, tx pgx.Tx, tenantID, turnID, to string)
 // SHARE is FK-compatible and never blocks fellow appenders; it only waits
 // on conversation FOR UPDATE holders (message sends), whose post-lock
 // phase never waits, so the wait graph stays acyclic.
-func appendStream(ctx context.Context, tx pgx.Tx, tenantID, convID, kind, refID, buildID string) (int64, error) {
+func AppendStream(ctx context.Context, tx pgx.Tx, tenantID, convID, kind, refID, buildID string) (int64, error) {
 	var one int
 	err := tx.QueryRow(ctx,
 		`SELECT 1 FROM studio.conversations WHERE id = $1 AND tenant_id = $2 FOR KEY SHARE`,
@@ -243,7 +244,7 @@ func appendMessage(ctx context.Context, tx pgx.Tx, tenantID, convID, role, body 
 		 VALUES ($1, $2, $3, $4, $5)`, id, tenantID, convID, role, body); err != nil {
 		return "", 0, dbErr(err, "")
 	}
-	seq, err := appendStream(ctx, tx, tenantID, convID, "message", id, "")
+	seq, err := AppendStream(ctx, tx, tenantID, convID, "message", id, "")
 	if err != nil {
 		return "", 0, err
 	}
@@ -474,10 +475,69 @@ func buildStatusView(ctx context.Context, tx pgx.Tx, tenant string, b buildRow) 
 	for _, q := range questions {
 		q["options"] = scrubbedJSON(q["options"])
 	}
+	// Recently expired questions with their durable causes, so the UI
+	// can explain why a later answer conflicts instead of showing a
+	// bare 409. Bounded and newest-first; withdrawn rows stay hidden
+	// (cancel already explains itself with a system message).
+	expired, err := tx.Query(ctx,
+		`SELECT id, kind, status, expired_reason FROM studio.questions
+		 WHERE tenant_id = $1 AND build_id = $2 AND status = 'expired'
+		 ORDER BY created_at DESC LIMIT 5`,
+		tenant, b.ID)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	expiredQs, err := pgx.CollectRows(expired, pgx.RowToMap)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	if expiredQs == nil {
+		expiredQs = []map[string]any{}
+	}
+	// Bounded command + decision lists for dispatch visibility. Shaped
+	// by the same subsetter as stream dispatch rows so the Pulse and
+	// the Run scene can never disagree about a row.
+	cmdRows, err := tx.Query(ctx,
+		`SELECT id, kind AS cmd_kind, state AS cmd_state,
+			attempts AS cmd_attempts, last_error AS cmd_error
+		 FROM studio.commands WHERE tenant_id = $1 AND build_id = $2
+		 ORDER BY created_at DESC LIMIT 20`,
+		tenant, b.ID)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	rawCmds, err := pgx.CollectRows(cmdRows, pgx.RowToMap)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	commands := []map[string]any{}
+	for _, r := range rawCmds {
+		shaped := shapeDispatchPayload(r)
+		shaped["id"], _ = r["id"].(string)
+		commands = append(commands, shaped)
+	}
+	decRows, err := tx.Query(ctx,
+		`SELECT id, question_id, decision, decided_by, decided_at, note
+		 FROM studio.approvals WHERE tenant_id = $1 AND build_id = $2
+		 ORDER BY decided_at DESC LIMIT 10`,
+		tenant, b.ID)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	decisions, err := pgx.CollectRows(decRows, pgx.RowToMap)
+	if err != nil {
+		return nil, dbErr(err, "")
+	}
+	if decisions == nil {
+		decisions = []map[string]any{}
+	}
 	return map[string]any{
 		"build_id": b.ID, "conversation_id": b.ConversationID, "status": b.Status,
 		"agent_kind": b.AgentKind, "agent_session_ref": b.AgentSessionRef,
-		"turn":           map[string]any{"id": turnID, "n": turnN, "status": turnStatus},
-		"open_questions": questions,
+		"turn":              map[string]any{"id": turnID, "n": turnN, "status": turnStatus},
+		"open_questions":    questions,
+		"expired_questions": expiredQs,
+		"commands":          commands,
+		"decisions":         decisions,
 	}, nil
 }

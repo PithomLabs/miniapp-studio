@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -18,6 +17,7 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/runner"
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 // noReadSpec is a valid spec whose workflow touches no external data: one
@@ -45,7 +45,7 @@ func noReadSpec(t *testing.T, owner string) json.RawMessage {
 func truncateFramework(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	owner, err := store.NewPool(ctx, os.Getenv("TEST_DATABASE_URL"), 0)
+	owner, err := store.NewPool(ctx, testdb.RunDSN(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func truncateFramework(t *testing.T) {
 
 func countRows(t *testing.T, table, where string, args ...any) int {
 	t.Helper()
-	owner, err := store.NewPool(context.Background(), os.Getenv("TEST_DATABASE_URL"), 0)
+	owner, err := store.NewPool(context.Background(), testdb.RunDSN(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestServiceInvocationTenantScoped(t *testing.T) {
 // (registered tool) so the tenant guard is the only possible refusal.
 func TestBareInvocationFailsClosed(t *testing.T) {
 	truncateFramework(t)
-	pool, err := store.NewPool(context.Background(), os.Getenv("TEST_DATABASE_URL"), 0)
+	pool, err := store.NewPool(context.Background(), testdb.RunDSN(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -389,3 +389,58 @@ func TestCommandsLogged(t *testing.T) {
 		t.Fatalf("queued commands = %d, want 1 (assign)", n)
 	}
 }
+
+// TestTerminalWhileWaitingExpiresQuestion pins F4: an out-of-band
+// terminal event arriving while an answer is outstanding expires the
+// open question with a durable cause and moves the build terminal —
+// instead of absorbing and stranding the build waiting forever. A
+// subsequent answer conflicts honestly.
+func TestTerminalWhileWaitingExpiresQuestion(t *testing.T) {
+	h := setupFakes(t)
+	_, buildID := runningBuild(t, h, "tmw", toolCredA)
+	ingest(t, h, buildID, "tmw-q", evtQuestion,
+		map[string]any{"question_id": "tmw-1", "body": "Which?"}, "tmw-e", toolCredA)
+	got := ingest(t, h, buildID, "tmw-done", evtCompleted, map[string]any{}, "tmw-k", toolCredA)
+	if got["transitioned"] != true || got["build_status"] != buildSucceeded {
+		t.Fatalf("terminal-while-waiting = %v, want transitioned/succeeded", got)
+	}
+	var status, reason string
+	err := h.owner.QueryRow(context.Background(),
+		`SELECT status, expired_reason FROM studio.questions WHERE tenant_id = $1 AND id = $2`,
+		toolTenantA, "tmw-1").Scan(&status, &reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "expired" || !strings.Contains(reason, "tmw-done") {
+		t.Errorf("question = %s (%q), want expired with event cause", status, reason)
+	}
+	var turnStatus string
+	err = h.owner.QueryRow(context.Background(),
+		`SELECT status FROM studio.turns WHERE tenant_id = $1 AND build_id = $2 ORDER BY n DESC LIMIT 1`,
+		toolTenantA, buildID).Scan(&turnStatus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turnStatus != turnExpired {
+		t.Errorf("turn = %s, want expired", turnStatus)
+	}
+	err = invokeErr(t, h, ToolQuestionAnswer,
+		mustJSON(t, map[string]any{"question_id": "tmw-1", "answer": "x"}), "tmw-a", toolCredA)
+	if err == nil || !strings.Contains(err.Error(), "no longer open") {
+		t.Errorf("late answer = %v, want no-longer-open", err)
+	}
+	st := invoke(t, h, ToolBuildStatus,
+		map[string]any{"build_id": buildID}, "tmw-st", toolCredA)
+	if qs, _ := st["open_questions"].([]any); len(qs) != 0 {
+		t.Errorf("open questions = %d, want 0", len(qs))
+	}
+	ex, _ := st["expired_questions"].([]any)
+	if len(ex) != 1 {
+		t.Fatalf("expired questions = %d, want 1", len(ex))
+	}
+	if first, _ := ex[0].(map[string]any); first["id"] != "tmw-1" {
+		t.Errorf("expired question = %v, want tmw-1 with cause", first)
+	} else if reason, _ := first["expired_reason"].(string); !strings.Contains(reason, "tmw-done") {
+		t.Errorf("expired cause = %q, want the terminal event", reason)
+	}
+}

@@ -295,6 +295,7 @@ type sendPlan struct {
 	attempts int
 	payload  map[string]any
 	url      string
+	conv     string
 	// wire is the exact signed payload. Continue rows pass their frozen
 	// row payload through verbatim; assigns resolve the prompt below.
 	wire map[string]any
@@ -341,12 +342,12 @@ func (snd *Sender) claimAndPlan(ctx context.Context, b senderBinding) (*sendPlan
 			p.payload = map[string]any{}
 		}
 		var build struct {
-			url, model, agent, conv string
+			url, model, agent, conv, status string
 		}
 		err = tx.QueryRow(ctx,
-			`SELECT gateway_url, model, agent_kind, conversation_id
+			`SELECT gateway_url, model, agent_kind, conversation_id, status
 			 FROM studio.builds WHERE tenant_id = $1 AND id = $2`,
-			b.tenant, buildID).Scan(&build.url, &build.model, &build.agent, &build.conv)
+			b.tenant, buildID).Scan(&build.url, &build.model, &build.agent, &build.conv, &build.status)
 		if err == pgx.ErrNoRows {
 			inline = terminalSettle("build row vanished (foreign key should prevent this)")
 			inlined = true
@@ -356,14 +357,38 @@ func (snd *Sender) claimAndPlan(ctx context.Context, b senderBinding) (*sendPlan
 			return fmt.Errorf("sender: load build: %w", err)
 		}
 		p.url = build.url
+		p.conv = build.conv
+		// Dead builds launch nothing: a cancel racing a queued assign
+		// must not start a real agent run. Cancel rows are exempt and
+		// always dispatch when a gateway URL exists — only the
+		// gateway knows whether a session is live (an accept may
+		// have landed before a crash without being adopted), and
+		// cancel delivery is idempotent: unknown builds ack via the
+		// 404 path, live sessions get cancelled.
+		if tools.TerminalBuild(build.status) && kind != gateway.CmdCancel {
+			inline = terminalSettle(fmt.Sprintf("build already %s; not dispatched", build.status))
+			inlined = true
+			return snd.settleTx(ctx, tx, b.tenant, p, inline)
+		}
 		if build.url == "" {
+			// An unprovisioned build has no session to kill: ack the
+			// cancel now instead of holding it forever. Every other
+			// kind waits for provisioning without burning.
+			if kind == gateway.CmdCancel {
+				inline = settle{state: "acked", detail: "build has no gateway URL; cancel goal holds"}
+				inlined = true
+				return snd.settleTx(ctx, tx, b.tenant, p, inline)
+			}
 			inline = snd.holdSettle("build has no gateway URL; waiting for provisioning")
 			inlined = true
 			return snd.settleTx(ctx, tx, b.tenant, p, inline)
 		}
 		switch kind {
 		case gateway.CmdAssign:
-			prompt, src, skip, fail := snd.resolvePrompt(ctx, tx, b.tenant, p.payload, build.conv)
+			prompt, src, skip, fail, ferr := snd.assignPrompt(ctx, tx, b.tenant, p, build.conv)
+			if ferr != nil {
+				return fmt.Errorf("sender: freeze prompt: %w", ferr)
+			}
 			if fail != "" {
 				inline = terminalSettle(fail)
 				inlined = true
@@ -416,11 +441,44 @@ func (snd *Sender) claimAndPlan(ctx context.Context, b senderBinding) (*sendPlan
 	return plan, true, nil
 }
 
+// assignPrompt returns the frozen assign prompt. The first claim resolves
+// and freezes; retries reuse the frozen bytes, so a message interleaved
+// between attempts can neither diverge the wire bytes (gateway
+// payload_mismatch fires on concurrent/live-claim divergence; sequential
+// divergence replays but lies in evidence) nor confuse the recorded
+// source. model/agent are insert-only (no UPDATE writer exists), so the
+// prompt is the only unstable input and freezing it stabilizes the row.
+func (snd *Sender) assignPrompt(ctx context.Context, tx pgx.Tx, tenant string, p *sendPlan, convID string) (prompt, src, skip, fail string, err error) {
+	if frozen, _ := p.payload["frozen_prompt"].(string); frozen != "" {
+		src, _ := p.payload["frozen_prompt_src"].(string)
+		if src == "" {
+			src = "frozen"
+		}
+		return frozen, src, "", "", nil
+	}
+	prompt, src, skip, fail = snd.resolvePrompt(ctx, tx, tenant, p.payload, convID)
+	if fail != "" || skip != "" {
+		return "", "", skip, fail, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE studio.commands
+		 SET payload = payload || jsonb_build_object('frozen_prompt', $1::text, 'frozen_prompt_src', $2::text),
+		     updated_at = now()
+		 WHERE tenant_id = $3 AND id = $4`,
+		prompt, src, tenant, p.rowID); err != nil {
+		return "", "", "", "", err
+	}
+	p.payload["frozen_prompt"] = prompt
+	p.payload["frozen_prompt_src"] = src
+	return prompt, src, "", "", nil
+}
+
 // resolvePrompt finds an assign's turn-1 prompt: the triggering message
 // when the row names one, else the conversation's latest user message at
 // dispatch time (a build.create title-only assign unblocks when the user
 // writes), else the row's title. Empty-handed returns a wait reason —
 // never an empty prompt, which the gateway would terminally refuse.
+// Callers must go through assignPrompt so the resolution freezes.
 func (snd *Sender) resolvePrompt(ctx context.Context, tx pgx.Tx, tenant string, payload map[string]any, convID string) (prompt, src, skip, fail string) {
 	if msgID, _ := payload["message_id"].(string); msgID != "" {
 		var body string
@@ -458,7 +516,9 @@ func (snd *Sender) resolvePrompt(ctx context.Context, tx pgx.Tx, tenant string, 
 
 // frozenTurn parses a continue row's frozen turn: an integral JSON number
 // >= 1. Anything else is a producer bug the gateway would refuse; failing
-// here keeps the refusal Studio-side and explicit.
+// here keeps the refusal Studio-side and explicit. Pre-C1 rows lack the
+// turn by construction — see docs/c1-command-row-upgrade-note.md; the
+// fail-fast is intentional, never silently backfilled.
 func frozenTurn(v any) (int, bool) {
 	f, ok := v.(float64)
 	if !ok || f < 1 || f != float64(int(f)) {
@@ -879,6 +939,7 @@ func (snd *Sender) settleTx(ctx context.Context, tx pgx.Tx, tenant string, plan 
 		return fmt.Errorf("sender: row %s lost mid-flight", plan.rowID)
 	}
 	// Burned retries exhaust the budget terminally.
+	final := st.state
 	if st.burn && st.state == "queued" && plan.attempts+1 >= snd.cfg.MaxAttempts {
 		if _, err := tx.Exec(ctx,
 			`UPDATE studio.commands SET state = 'failed',
@@ -888,6 +949,7 @@ func (snd *Sender) settleTx(ctx context.Context, tx pgx.Tx, tenant string, plan 
 			tenant, plan.rowID); err != nil {
 			return fmt.Errorf("sender: exhaust row: %w", err)
 		}
+		final = "failed"
 	}
 	if st.flipRunning {
 		// The accept proves a run; events racing ahead may already
@@ -917,6 +979,21 @@ func (snd *Sender) settleTx(ctx context.Context, tx pgx.Tx, tenant string, plan 
 		}
 		if err != nil {
 			return fmt.Errorf("sender: track turn: %w", err)
+		}
+	}
+	// Settled rows join the conversation stream — acks AND failures.
+	// A failure-only dispatch stream would mislead about coverage, so
+	// every terminal outcome streams and the Pulse renders both.
+	// Queued outcomes (burn/hold/shutdown) are not outcomes yet.
+	// Conv-less rows (unparseable payload, vanished build) fail
+	// without a stream row: there is no conversation to stream to.
+	// Position matters: this runs AFTER all build updates so the
+	// txn's lock order stays command → build → conversation →
+	// advisory, matching ingest. Appending before the flip
+	// deadlocks against ingest's build-first order (proven red).
+	if (final == "acked" || final == "failed") && plan.conv != "" {
+		if _, err := tools.AppendStream(ctx, tx, tenant, plan.conv, "dispatch", plan.rowID, plan.buildID); err != nil {
+			return fmt.Errorf("sender: stream dispatch outcome: %w", err)
 		}
 	}
 	return nil

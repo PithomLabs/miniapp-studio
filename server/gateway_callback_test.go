@@ -1,16 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PithomLabs/miniapp-studio/gateway"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 	"github.com/PithomLabs/miniapp-studio/tools"
 )
 
@@ -191,10 +193,7 @@ func TestCallbackViaGatewayOutbox(t *testing.T) {
 // a callback signed with the derived key verifies with no explicit
 // provider injected.
 func TestCallbackKDFWiring(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
+	dsn := testdb.RunDSN(t)
 	secret := "kdf-org-secret-0123456789abcdef"
 	srv, _ := bootServerOn(t, dsn, nil, nil, true, func(c *Config) {
 		c.GatewayOrgSecret = secret
@@ -216,10 +215,7 @@ func TestCallbackKDFWiring(t *testing.T) {
 // enforces its keys — a callback signed under a different org secret
 // is unauthorized, proving verification actually gates on derivation.
 func TestCallbackKDFRejectsWrongSecret(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
+	dsn := testdb.RunDSN(t)
 	secret := "kdf-org-secret-0123456789abcdef"
 	srv, _ := bootServerOn(t, dsn, nil, nil, true, func(c *Config) {
 		c.GatewayOrgSecret = secret
@@ -261,5 +257,30 @@ func TestCallbackDuplicateQuestionIDFailsTerminally(t *testing.T) {
 		"dup-e2", "agent.question", map[string]any{"question_id": "dup-1", "body": "Q again?"}))
 	if code != http.StatusBadRequest {
 		t.Fatalf("reused question id = %d %v, want 400", code, ack)
+	}
+}
+
+// TestCallbackConflictingQuestionIDWarns pins F5: the terminal 400 for a
+// reused question id emits one structured warning with identifiers only.
+// Bodies and options must never reach the log.
+func TestCallbackConflictingQuestionIDWarns(t *testing.T) {
+	srv := callbackServer(t)
+	var buf bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	_, build := setupBuild(t, srv, testTenant)
+	secretBody := "Q-with-secret-marker-ZZ9"
+	postCallback(t, srv, signedCallback(t, build, testTenant,
+		"wrn-e1", "agent.question", map[string]any{"question_id": "wrn-1", "body": "First?"}))
+	buf.Reset()
+	postCallback(t, srv, signedCallback(t, build, testTenant,
+		"wrn-e2", "agent.question", map[string]any{"question_id": "wrn-1", "body": secretBody}))
+	logged := buf.String()
+	for _, want := range []string{"conflicting question id", build, "wrn-e2", "wrn-1"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("warn log lacks %q:\n%s", want, logged)
+		}
+	}
+	if strings.Contains(logged, secretBody) {
+		t.Errorf("warn log leaks the question body:\n%s", logged)
 	}
 }

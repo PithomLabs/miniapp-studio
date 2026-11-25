@@ -4,11 +4,49 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/PithomLabs/miniapp/registry"
 )
+
+// shapeDispatchPayload reduces one joined command row to the stable
+// subset the Pulse renders: kind, terminal state, attempts, and a
+// capped first-line reason. Raw transport text never reaches the
+// browser; full detail stays queryable in studio.commands.
+func shapeDispatchPayload(item map[string]any) map[string]any {
+	kind, _ := item["cmd_kind"].(string)
+	state, _ := item["cmd_state"].(string)
+	if kind == "" {
+		// Join miss: the command row is gone (cascade) but the
+		// stream row survived. Say unknown, never blank.
+		return map[string]any{
+			"command_kind": "", "state": "unknown",
+			"attempts": int64(0), "reason": "command row gone",
+			"exhausted": false,
+		}
+	}
+	var attempts int64
+	switch n := item["cmd_attempts"].(type) {
+	case int32:
+		attempts = int64(n)
+	case int64:
+		attempts = n
+	}
+	reason, _ := item["cmd_error"].(string)
+	if i := strings.IndexByte(reason, '\n'); i >= 0 {
+		reason = reason[:i]
+	}
+	if len(reason) > 300 {
+		reason = reason[:300] + "…"
+	}
+	return map[string]any{
+		"command_kind": kind, "state": state,
+		"attempts": attempts, "reason": reason,
+		"exhausted": state == "failed" && strings.HasPrefix(reason, "exhausted "),
+	}
+}
 
 type conversationRow struct {
 	ID            string
@@ -243,13 +281,17 @@ func (d Deps) conversationStream(ctx context.Context, call registry.ToolCall) (j
 	rows, err := call.Tx.Query(ctx,
 		`SELECT s.seq, s.kind, s.ref_id, s.build_id,
 			m.role, m.body,
-			e.type, e.payload
+			e.type, e.payload,
+			c.kind AS cmd_kind, c.state AS cmd_state,
+			c.attempts AS cmd_attempts, c.last_error AS cmd_error
 		 FROM studio.conversation_stream AS s
 		 LEFT JOIN studio.messages AS m
 		   ON m.tenant_id = s.tenant_id AND m.id = s.ref_id AND s.kind = 'message'
 		 LEFT JOIN studio.events AS e
 		   ON e.tenant_id = s.tenant_id AND e.build_id = s.build_id
 		   AND e.event_id = s.ref_id AND s.kind = 'event'
+		 LEFT JOIN studio.commands AS c
+		   ON c.tenant_id = s.tenant_id AND c.id = s.ref_id AND s.kind = 'dispatch'
 		 WHERE s.tenant_id = $1 AND s.conversation_id = $2 AND s.seq > $3
 		 ORDER BY s.seq ASC LIMIT $4`,
 		tenant, in.ConversationID, in.AfterSeq, limit)
@@ -269,6 +311,9 @@ func (d Deps) conversationStream(ctx context.Context, call registry.ToolCall) (j
 	for _, item := range items {
 		if item["kind"] == "event" {
 			item["payload"] = scrubbedJSON(item["payload"])
+		}
+		if item["kind"] == "dispatch" {
+			item["payload"] = shapeDispatchPayload(item)
 		}
 	}
 	var latest int64 = in.AfterSeq

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/PithomLabs/miniapp-studio/testdb"
 	"github.com/PithomLabs/miniapp/testkit"
 )
 
@@ -23,6 +24,9 @@ func scratchDB(t *testing.T, prefix string) string {
 	if base == "" {
 		t.Skip("TEST_DATABASE_URL unset")
 	}
+	// U5.12: staging tests need the cluster roles to exist. RunDSN
+	// ensures both (create-only) without touching any credential.
+	_ = testdb.RunDSN(t)
 	admin, err := NewPool(ctx, base, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -165,10 +169,6 @@ func TestMigrationRefusesCrossTenantData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	pass := randomHexForTest(t, 32)
-	if err := EnsureAppRole(ctx, owner, pass); err != nil {
-		t.Fatalf("EnsureAppRole: %v", err)
-	}
 	six := uint(6)
 	if err := migrateTo(dsn, &six); err != nil {
 		t.Fatalf("migrate to v6: %v", err)

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PithomLabs/miniapp-studio/fly"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 func postForm(t *testing.T, srv *Server, target string, values url.Values, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -381,7 +382,7 @@ func TestMutationsRequireAuth(t *testing.T) {
 func assertMarkerAbsent(t *testing.T, marker string) {
 	t.Helper()
 	ctx := context.Background()
-	owner, err := pgxpool.New(ctx, os.Getenv("TEST_DATABASE_URL"))
+	owner, err := pgxpool.New(ctx, testdb.RunDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +406,7 @@ func assertMarkerAbsent(t *testing.T, marker string) {
 
 func truncateAudit(t *testing.T) {
 	t.Helper()
-	owner, err := pgxpool.New(context.Background(), os.Getenv("TEST_DATABASE_URL"))
+	owner, err := pgxpool.New(context.Background(), testdb.RunDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}

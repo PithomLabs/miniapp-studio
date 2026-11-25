@@ -1,0 +1,24 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">What should we build?</h1>
+<p class="sub">Describe an app in plain language. The studio builds it from governed parts: it shows you the plan, proves it against tests, and asks before anything consequential. Every action leaves a receipt.</p>
+<div class="card">
+<h3>New conversation</h3>
+<form method="post" action="/console/conversations" style="display:flex;gap:8px;margin-top:8px">
+<input type="hidden" name="opkey" value="{{.GalleryOpKey}}">
+<input type="text" name="title" maxlength="256" placeholder="e.g. Invoice Review Desk" aria-label="Conversation title" style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:9px 12px;font:inherit">
+<button class="btn primary" type="submit">Start</button>
+</form>
+</div>
+{{if .Conversations}}
+<div class="card">
+<h3>Recent conversations</h3>
+<ul class="steps">
+{{range .Conversations}}<li><span class="n">▸</span><a href="/console?conversation={{.id}}&scene=run">{{if .title}}{{.title}}{{else}}Conversation{{end}}</a> <span class="tag mut">{{.status}}</span></li>{{end}}
+</ul>
+</div>
+{{else}}
+<div class="card"><h3>No conversations yet</h3><p class="sub">Start one above — it becomes the focus of the spine, the scene, and the Pulse.</p></div>
+{{end}}
+</div>
+{{end}}

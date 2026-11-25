@@ -1,0 +1,11 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Settings</h1>
+<p class="sub">Environment of record for this operator. Nothing here is assumed.</p>
+<div class="card"><div class="kv">
+<dt>Tenant</dt><dd class="mono">{{.Tenant}}</dd>
+<dt>Binding</dt><dd class="mono">{{.Binding}}</dd>
+</div></div>
+<div class="card"><h3>Stop everything</h3><p style="color:var(--mut);font-size:13.5px;margin:4px 0 8px">The red control in the left rail halts every non-terminal build in this tenant — and only this tenant. Hold it for a moment to fire. Decided approvals stay immutable; open questions withdraw.</p></div>
+</div>
+{{end}}

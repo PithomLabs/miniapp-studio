@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/PithomLabs/miniapp-studio/gateway"
 	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 	"github.com/PithomLabs/miniapp-studio/tools"
 )
 
@@ -53,10 +53,7 @@ func assertIncreasingUnique(t *testing.T, ids []int64) {
 // the same database, and a reconnect from the last cursor replays exactly
 // the missed rows — no gaps, no duplicates.
 func TestSSEKillAndResume(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
+	dsn := testdb.RunDSN(t)
 	srv := callbackServer(t)
 	srv.ssePoll = 10 * time.Millisecond
 	conv, _ := setupBuild(t, srv, testTenant)
@@ -177,8 +174,9 @@ func TestSSEConcurrentTrafficNoGapsNoDupes(t *testing.T) {
 			}
 		}(i)
 	}
-	// Sender dispatches in the middle of it all: lock-interference probe
-	// (acks write no stream rows, so the stream must stay exact).
+	// Sender dispatches in the middle of it all: lock-interference probe.
+	// Settlements append dispatch rows to the same stream, so the
+	// exact-set match below covers them too.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

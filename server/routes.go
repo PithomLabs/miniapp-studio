@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html templates/focus/*.html static/focus/console.js
 var templateFiles embed.FS
 
 func (s *Server) routes() {
@@ -47,6 +47,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /connectors/custom/test", s.requireSession(requireOrigin(s.handleConnectorTest)))
 	mux.HandleFunc("POST /connectors/custom/create", s.requireSession(requireOrigin(s.handleConnectorCreate)))
 	mux.HandleFunc("GET /activity", s.requireSession(s.handleActivity))
+	mux.HandleFunc("GET /console", s.requireSession(s.handleConsole))
+	mux.HandleFunc("POST /console/line", s.requireSession(requireOrigin(s.handleConsoleLine)))
+	mux.HandleFunc("POST /console/conversations", s.requireSession(requireOrigin(s.handleConsoleConversations)))
+	mux.HandleFunc("POST /console/decide", s.requireSession(requireOrigin(s.handleConsoleDecide)))
+	mux.HandleFunc("POST /console/kill", s.requireSession(requireOrigin(s.handleConsoleKill)))
+	mux.HandleFunc("GET /static/focus/console.js", s.requireSession(s.handleFocusJS))
 	mux.HandleFunc("/", s.handleNotFound)
 	s.mux = mux
 }

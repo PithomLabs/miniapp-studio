@@ -1,0 +1,16 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Evidence</h1>
+<p class="sub">Receipts below are live audit records. The gate ledger (G0–G12) lands in Phase D — nothing here claims gate status. Per-second stream polls are hidden as transport noise; the audit trail itself is complete.</p>
+{{if .Activity}}
+<div class="scroll"><table>
+<thead><tr><th>ID</th><th>At</th><th>Tool</th><th>Action</th><th>Outcome</th></tr></thead>
+<tbody>
+{{range .Activity}}<tr><td class="mono">{{.id}}</td><td class="mono">{{.at}}</td><td>{{.tool}}</td><td>{{.action}}</td><td>{{if eq .outcome "succeeded"}}<span class="tag ok">succeeded</span>{{else if eq .outcome "failed"}}<span class="tag bad">failed</span>{{else}}<span class="tag warn">{{.outcome}}</span>{{end}}</td></tr>{{end}}
+</tbody>
+</table></div>
+{{else}}
+<div class="card"><h3>No receipts yet</h3><p class="sub">Every tool invocation leaves an audit record; this tenant has none so far.</p></div>
+{{end}}
+</div>
+{{end}}

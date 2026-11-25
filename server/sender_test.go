@@ -1,14 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -813,9 +816,6 @@ func TestSenderTenantIsolation(t *testing.T) {
 // TestSenderLifecycle pins Start/Stop semantics: keys required, double
 // start refused, stop idempotent.
 func TestSenderLifecycle(t *testing.T) {
-	if os.Getenv("TEST_DATABASE_URL") == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
 	srv, _ := testServer(t)
 	if err := srv.StartSender(testSenderCfg()); err == nil {
 		t.Fatal("StartSender without keys succeeded, want refusal")
@@ -1028,6 +1028,207 @@ func TestSenderDefensiveBranches(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+// TestSenderSettlementsStreamDispatchOutcomes pins guardrail 4: every
+// terminal settlement — acked AND failed — appends a dispatch stream
+// row with the shaped subset, so the Pulse renders dispatch coverage
+// from the same replayable cursor as messages and events.
+func TestSenderSettlementsStreamDispatchOutcomes(t *testing.T) {
+	w := newSenderWorld(t)
+	ctx := context.Background()
+	conv, build := w.openBuild(t, testTenant, "dsp")
+	w.snd.PollOnce(ctx) // assign acks
+	w.adapter.Fail["Continue"] = errors.New("boom")
+	contID := w.insertCommand(t, testTenant, build, gateway.CmdContinue, map[string]any{
+		"question_id": "q", "kind": "clarification", "answer": "a", "turn": float64(2),
+	}, "queued", 0)
+	for i := 0; i < testSenderCfg().MaxAttempts; i++ {
+		w.resetDue(t, testTenant, contID)
+		w.snd.PollOnce(ctx)
+	}
+	page := w.invoke(t, testTenant, tools.ToolConversationStream,
+		map[string]any{"conversation_id": conv, "after_seq": 0}, "dsp-stream")
+	items, _ := page["items"].([]any)
+	var dispatch []map[string]any
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["kind"] == "dispatch" {
+			dispatch = append(dispatch, m)
+		}
+	}
+	if len(dispatch) != 2 {
+		t.Fatalf("dispatch rows = %d, want 2 (ack + exhausted)", len(dispatch))
+	}
+	ack, _ := dispatch[0]["payload"].(map[string]any)
+	if ack["command_kind"] != "assign" || ack["state"] != "acked" {
+		t.Errorf("ack payload = %v", ack)
+	}
+	if ack["exhausted"] == true {
+		t.Errorf("ack marked exhausted: %v", ack)
+	}
+	fail, _ := dispatch[1]["payload"].(map[string]any)
+	if fail["command_kind"] != "continue" || fail["state"] != "failed" {
+		t.Errorf("failed payload = %v", fail)
+	}
+	if fail["exhausted"] != true {
+		t.Errorf("exhausted flag = %v, want true", fail["exhausted"])
+	}
+	if reason, _ := fail["reason"].(string); !strings.Contains(reason, "exhausted 5 attempts") {
+		t.Errorf("reason = %q, want exhaustion evidence", reason)
+	}
+}
+
+// TestSenderSkipsDispatchForTerminalBuild pins F3 path 1: a cancel that
+// lands while an assign is still queued must not start a real agent
+// run. The assign fails honestly without burning; the cancel still
+// dispatches (only the gateway knows if a session is live) and acks.
+func TestSenderSkipsDispatchForTerminalBuild(t *testing.T) {
+	w := newSenderWorld(t)
+	ctx := context.Background()
+	_, build := w.openBuild(t, testTenant, "f3t")
+	w.invoke(t, testTenant, tools.ToolBuildCancel, map[string]any{"build_id": build}, "f3t-cancel")
+	assignID := w.commandID(t, testTenant, build, gateway.CmdAssign)
+	cancelID := w.commandID(t, testTenant, build, gateway.CmdCancel)
+
+	w.snd.PollOnce(ctx)
+	assign := w.getCommand(t, testTenant, assignID)
+	if assign.state != "failed" || !strings.Contains(assign.lastError, "already cancelled; not dispatched") {
+		t.Fatalf("assign = %s (%q), want failed/not-dispatched", assign.state, assign.lastError)
+	}
+	if assign.attempts != 0 {
+		t.Errorf("assign attempts = %d, want 0 (no dispatch, no burn)", assign.attempts)
+	}
+	if n := len(w.adapter.Starts); n != 0 {
+		t.Fatalf("gateway executions = %d, want 0", n)
+	}
+	// The cancel still dispatches: only the gateway knows whether a
+	// session is live. Here nothing ever launched, so the 404 path
+	// acks without a session ever existing.
+	cancel := w.getCommand(t, testTenant, cancelID)
+	if cancel.state != "acked" || !strings.Contains(cancel.lastError, "goal holds") {
+		t.Fatalf("cancel = %s (%q), want acked/goal-holds", cancel.state, cancel.lastError)
+	}
+	if cancel.attempts != 1 {
+		t.Errorf("cancel attempts = %d, want 1 (it dispatched to ask)", cancel.attempts)
+	}
+}
+
+// TestSenderAcksCancelWithoutProvisioning pins F3 path 2: cancelling a
+// build that never got a gateway URL settles at once — there is no
+// session to kill, so holding for provisioning would never converge.
+// The sibling assign keeps honestly waiting.
+func TestSenderAcksCancelWithoutProvisioning(t *testing.T) {
+	w := newSenderWorld(t)
+	ctx := context.Background()
+	out := w.invoke(t, testTenant, tools.ToolConversationCreate, map[string]any{"title": "s"}, "f3u-conv")
+	conv, _ := out["conversation_id"].(string)
+	out = w.invoke(t, testTenant, tools.ToolBuildCreate,
+		map[string]any{"conversation_id": conv, "title": "never provisioned"}, "f3u-build")
+	build, _ := out["build_id"].(string)
+	// No build.cancel: the build stays live but unprovisioned, so the
+	// cancel row below exercises the no-URL branch rather than the
+	// terminal branch. (build.cancel terminalizes synchronously, which
+	// would route through "already cancelled" instead.)
+	assignID := w.commandID(t, testTenant, build, gateway.CmdAssign)
+	cancelID := w.insertCommand(t, testTenant, build, gateway.CmdCancel, map[string]any{}, "queued", 0)
+
+	w.snd.PollOnce(ctx)
+	cancel := w.getCommand(t, testTenant, cancelID)
+	if cancel.state != "acked" || !strings.Contains(cancel.lastError, "cancel goal holds") {
+		t.Fatalf("cancel = %s (%q), want acked/goal-holds", cancel.state, cancel.lastError)
+	}
+	assign := w.getCommand(t, testTenant, assignID)
+	if assign.state != "queued" || assign.attempts != 0 {
+		t.Fatalf("assign = %s/%d, want queued/0 (still honestly waiting)", assign.state, assign.attempts)
+	}
+	if n := len(w.adapter.Starts); n != 0 {
+		t.Fatalf("gateway executions = %d, want 0", n)
+	}
+}
+
+// TestSenderAssignFreezesPromptAcrossAmbiguousRetry reproduces F2's exact
+// failure mode: the first assign request is accepted by the gateway but
+// its response never reaches Studio; a new user message lands before the
+// retry. The retry must send byte-identical wire content (the frozen M1
+// prompt) so gateway dedup replays the recorded accept instead of
+// fencing a mismatch and terminally failing a launched turn.
+func TestSenderAssignFreezesPromptAcrossAmbiguousRetry(t *testing.T) {
+	w := newSenderWorld(t)
+	ctx := context.Background()
+	var calls atomic.Int32
+	var mu sync.Mutex
+	var prompts []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var env struct {
+			Payload map[string]any `json:"payload"`
+		}
+		_ = json.Unmarshal(raw, &env)
+		prompt, _ := env.Payload["prompt"].(string)
+		mu.Lock()
+		prompts = append(prompts, prompt)
+		mu.Unlock()
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		rec := httptest.NewRecorder()
+		w.gw.ServeHTTP(rec, r)
+		if calls.Add(1) == 1 {
+			// Accepted inside the gateway; the response is lost on the wire.
+			rw.WriteHeader(http.StatusInternalServerError)
+			_, _ = rw.Write([]byte(`{"error":"response lost"}`))
+			return
+		}
+		for k, vs := range rec.Header() {
+			for _, v := range vs {
+				rw.Header().Add(k, v)
+			}
+		}
+		rw.WriteHeader(rec.Code)
+		_, _ = rw.Write(rec.Body.Bytes())
+	}))
+	t.Cleanup(proxy.Close)
+	conv, build := w.openBuild(t, testTenant, "f2")
+	w.setGatewayURL(t, testTenant, build, proxy.URL)
+	w.invoke(t, testTenant, tools.ToolMessageSend,
+		map[string]any{"conversation_id": conv, "body": "M1 original"}, "f2-m1")
+	rowID := w.commandID(t, testTenant, build, gateway.CmdAssign)
+
+	w.snd.PollOnce(ctx) // attempt 1: accepted, response lost → burn
+	if n := len(w.adapter.Starts); n != 1 {
+		t.Fatalf("gateway executions = %d, want 1", n)
+	}
+	if got := w.adapter.Starts[0].Prompt; got != "M1 original" {
+		t.Fatalf("attempt-1 prompt = %q, want M1", got)
+	}
+	row := w.getCommand(t, testTenant, rowID)
+	if row.state != "queued" || row.attempts != 1 {
+		t.Fatalf("row after lost response = %s/%d, want queued/1", row.state, row.attempts)
+	}
+	// A new message lands before the retry.
+	w.invoke(t, testTenant, tools.ToolMessageSend,
+		map[string]any{"conversation_id": conv, "body": "M2 interleaved"}, "f2-m2")
+	w.resetDue(t, testTenant, rowID)
+
+	w.snd.PollOnce(ctx) // attempt 2: must replay M1 bytes, not M2
+	row = w.getCommand(t, testTenant, rowID)
+	if row.state != "acked" {
+		t.Fatalf("row after retry = %s (%q), want acked", row.state, row.lastError)
+	}
+	if n := len(w.adapter.Starts); n != 1 {
+		t.Fatalf("gateway executions = %d, want 1 (replay, no relaunch)", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 2 || prompts[0] != "M1 original" || prompts[1] != "M1 original" {
+		t.Fatalf("wire prompts per attempt = %q, want [M1 M1]", prompts)
+	}
+	if got := row.payload["frozen_prompt"]; got != "M1 original" {
+		t.Errorf("frozen_prompt = %v, want M1", got)
+	}
+	turn, _ := w.buildTracking(t, testTenant, build)
+	if turn == nil || *turn != 1 {
+		t.Errorf("tracked turn = %v, want 1", turn)
+	}
+}
 
 // TestSenderRestartResumesLoop pins in-process sender restart: stop and
 // start again, and fresh rows dispatch on the new loop's first pass.
