@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>Create App</h1>
+<p>The conversational builder ships in P5. Today: paste a MiniappSpec, validate it, preview it against fixtures, then save it to a new or existing app.</p>
+<h2>1. Register the app</h2>
+<form method="post" action="/apps">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label>Slug <input name="slug" type="text" required></label>
+<label>Name <input name="name" type="text" required></label>
+<label>Description <input name="description" type="text"></label>
+<button type="submit">Create</button>
+</form>
+<h2>2. Validate a spec</h2>
+<form method="post" action="/apps/new/validate">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<textarea name="spec" rows="12" cols="80" placeholder="Paste MiniappSpec JSON"></textarea>
+<button type="submit">Validate</button>
+</form>
+<h2>3. Preview with fixtures</h2>
+<form method="post" action="/apps/new/preview">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<textarea name="spec" rows="6" cols="80" placeholder="Paste MiniappSpec JSON"></textarea>
+<label>Workflow <input name="workflow" type="text" required></label>
+<label>Fixture <input name="fixture" type="text" required></label>
+<button type="submit">Dry-run preview</button>
+</form>
+<p><a href="/">Home</a></p>
+{{end}}

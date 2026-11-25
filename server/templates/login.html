@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Miniapp Studio</h1>
+{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
+<form method="post" action="/login">
+<input type="hidden" name="next" value="{{.Next}}">
+<label>Operator token <input name="token" type="password" autocomplete="off"></label>
+<button type="submit">Sign in</button>
+</form>
+{{end}}

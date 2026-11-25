@@ -1,0 +1,12 @@
+-- Restore the pre-000016 state exactly: RLS present-but-inert (FORCE set,
+-- ENABLE cleared) on the Phase A tables.
+ALTER TABLE studio.conversations DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.messages DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.builds DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.turns DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.questions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.commands DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.events DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.conversation_stream DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.artifacts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE studio.approvals DISABLE ROW LEVEL SECURITY;

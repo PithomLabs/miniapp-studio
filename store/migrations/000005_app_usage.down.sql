@@ -1,0 +1,1 @@
+REVOKE USAGE ON SCHEMA app FROM studio_app;

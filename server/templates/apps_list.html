@@ -1,0 +1,7 @@
+{{define "content"}}
+<h1>My Apps</h1>
+{{if .Apps}}<table><thead><tr><th>Name</th><th>Slug</th><th>Version</th><th>Deploy</th></tr></thead>
+<tbody>{{range .Apps}}<tr><td><a href="/apps/{{.id}}">{{.name}}</a></td><td>{{.slug}}</td><td>{{.version}}</td><td>{{.deploy_status}}</td></tr>{{end}}</tbody></table>
+{{else}}<p>No applications yet. <a href="/apps/new">Create one</a>.</p>{{end}}
+<p><a href="/">Home</a></p>
+{{end}}

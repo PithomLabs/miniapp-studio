@@ -1,0 +1,22 @@
+{{define "content"}}
+{{if eq .Deploy.status "provisioning"}}<meta http-equiv="refresh" content="2">{{end}}
+<h1>Validate &amp; Deploy — {{.App.name}}</h1>
+<p>Version {{.App.version}} · hash {{.App.hash}}</p>
+{{if .FlyConfigured}}<p>Fly target: configured.</p>
+{{else}}<p role="note">Fly target: not configured. Deployment actions report honestly until production credentials exist.</p>{{end}}
+<h2>Deployment</h2>
+<p>Status: {{.Deploy.status}}{{with .Deploy.url}} — <a href="{{.}}">{{.}}</a>{{end}}{{with .Deploy.error}} ({{.}}){{end}}</p>
+<h2>Provision</h2>
+<form method="post" action="/apps/{{.App.id}}/deploy">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label><input type="checkbox" name="confirm" value="yes" required> I confirm provisioning a Fly target for this app.</label>
+<button type="submit">Provision</button>
+</form>
+<h2>Retire</h2>
+<form method="post" action="/apps/{{.App.id}}/retire">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label><input type="checkbox" name="confirm" value="yes" required> I confirm retiring this deployment.</label>
+<button type="submit">Retire</button>
+</form>
+<p><a href="/apps/{{.App.id}}">Back to app</a> · <a href="/">Home</a></p>
+{{end}}

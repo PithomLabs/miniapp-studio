@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Conversations</h1>
+{{if .Conversations}}<ul>{{range .Conversations}}<li><a href="/conversations/{{.id}}">{{if .title}}{{.title}}{{else}}Untitled{{end}}</a> ({{.status}})</li>{{end}}</ul>
+{{else}}<p>No conversations yet.</p>{{end}}
+<h2>New conversation</h2>
+<form method="post" action="/conversations">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label>Title <input type="text" name="title" maxlength="256"></label>
+<button type="submit">Start</button>
+</form>
+<p><a href="/">Home</a></p>
+{{end}}

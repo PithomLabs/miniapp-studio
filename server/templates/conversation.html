@@ -1,0 +1,58 @@
+{{define "content"}}
+<h1>{{if .Conversation.title}}{{.Conversation.title}}{{else}}Conversation{{end}}</h1>
+{{range .Builds}}<p>Build {{.build_id}}: <strong>{{.status}}</strong>{{with .turn}} (turn {{.n}}: {{.status}}){{end}}</p>{{end}}
+<div id="stream">
+{{range .Items}}{{if eq .Kind "message"}}<div data-seq="{{.Seq}}"><strong>{{.Role}}:</strong> {{.Body}}</div>
+{{else}}<div data-seq="{{.Seq}}"><em>{{.Type}}:</em> {{.Text}}</div>
+{{end}}{{end}}
+</div>
+<h2>Send a message</h2>
+<form method="post" action="/conversations/{{.Conversation.id}}/messages">
+<input type="hidden" name="opkey" value="{{.MsgOpKey}}">
+<textarea name="body" rows="3" cols="60" required></textarea>
+<button type="submit">Send</button>
+</form>
+{{range .Builds}}{{range .open_questions}}
+<h3>Question ({{.kind}})</h3>
+<p>{{.body}}</p>
+{{if .options}}<ul>{{range .options}}<li>{{.}}</li>{{end}}</ul>{{end}}
+<form method="post" action="/questions/{{.id}}/answer">
+<input type="hidden" name="opkey" value="{{.opkey}}">
+{{if eq .kind "authorization_request"}}
+<button type="submit" name="answer" value="approved">Approve</button>
+<button type="submit" name="answer" value="rejected">Reject</button>
+{{else}}
+<input type="text" name="answer" maxlength="65536" required>
+<button type="submit">Answer</button>
+{{end}}
+</form>
+{{end}}{{end}}
+<p><a href="/conversations">All conversations</a> · <a href="/">Home</a></p>
+<script>
+(function(){
+  var list = document.getElementById('stream');
+  var src = new EventSource(window.location.pathname + '/events?after={{.LatestSeq}}');
+  src.addEventListener('update', function(ev){
+    var item;
+    try { item = JSON.parse(ev.data); } catch (e) { return; }
+    var div = document.createElement('div');
+    if (item.kind === 'message') {
+      var strong = document.createElement('strong');
+      strong.textContent = (item.role || 'message') + ': ';
+      div.appendChild(strong);
+      div.appendChild(document.createTextNode(item.body || ''));
+    } else {
+      var em = document.createElement('em');
+      em.textContent = (item.type || 'event') + ': ';
+      div.appendChild(em);
+      var text = '';
+      if (item.payload && typeof item.payload === 'object') {
+        text = item.payload.text || item.payload.body || '';
+      }
+      div.appendChild(document.createTextNode(text));
+    }
+    list.appendChild(div);
+  });
+})();
+</script>
+{{end}}

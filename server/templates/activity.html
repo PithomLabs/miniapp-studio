@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Activity</h1>
+{{if .events}}<table><thead><tr><th>Time</th><th>Tool</th><th>Action</th><th>Outcome</th></tr></thead>
+<tbody>{{range .events}}<tr><td>{{.at}}</td><td>{{.tool}}</td><td>{{.action}}</td><td>{{.outcome}}</td></tr>{{end}}</tbody></table>
+{{with .next_cursor}}<p><a href="/activity?cursor={{.}}">Older</a></p>{{end}}
+{{else}}<p>No activity yet.</p>{{end}}
+<p><a href="/">Home</a></p>
+{{end}}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "file:///srv/studio-agent/plugin",
+      { "guidance": false }
+    ]
+  ],
+  "permission": {
+    "bash": "allow",
+    "read": "allow",
+    "edit": "allow",
+    "write": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "question": "deny",
+    "external_directory": "deny",
+    "sprites_checkpoint_create": "allow",
+    "sprites_list_sprites": "deny",
+    "sprites_get_sprite_info": "deny",
+    "sprites_get_fly_context": "deny",
+    "sprites_create_sprite": "deny",
+    "sprites_destroy_sprite": "deny",
+    "sprites_checkpoint_list": "deny",
+    "sprites_checkpoint_restore": "deny",
+    "sprites_policy_network_get": "deny",
+    "sprites_policy_network_update": "deny",
+    "sprites_exec": "deny",
+    "sprites_exec_list": "deny",
+    "sprites_exec_kill": "deny",
+    "sprites_file_read": "deny",
+    "sprites_file_list": "deny",
+    "sprites_file_write": "deny",
+    "sprites_file_delete": "deny",
+    "sprites_file_rename": "deny",
+    "sprites_file_copy": "deny",
+    "sprites_service_create": "deny",
+    "sprites_service_get": "deny",
+    "sprites_service_list": "deny",
+    "sprites_service_logs": "deny",
+    "sprites_service_start": "deny",
+    "sprites_service_stop": "deny"
+  },
+  "instructions": ["/srv/studio-gateway/builder.md"]
+}

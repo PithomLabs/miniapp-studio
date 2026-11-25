@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Validation result</h1>
+{{if .valid}}<p>Valid. Content hash: {{.hash}}</p>
+{{else}}<p>Invalid:</p><ul>{{range .errors}}<li>{{.code}} {{.path}}: {{.message}}</li>{{end}}</ul>{{end}}
+<h2>Submitted spec</h2>
+<pre>{{.Spec}}</pre>
+<p><a href="/apps/new">Back to Create</a> · <a href="/">Home</a></p>
+{{end}}

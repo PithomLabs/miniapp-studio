@@ -1,0 +1,42 @@
+name: ci
+
+# P0 skeleton gates: formatting, vet, build, tests. Postgres-backed suites
+# (framework pin gate, Studio integration tests) run in later phases once the
+# module consumes the pinned framework and test fixtures exist.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres@sha256:bb6e70add742cd868fb62cb3b2f67d1dd2bdd2b65a521e778420748753687c60
+        env:
+          POSTGRES_USER: studio
+          POSTGRES_PASSWORD: studio-ci
+          POSTGRES_DB: studio_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://studio:studio-ci@localhost:5432/studio_test
+      TEST_DBOS_DATABASE_URL: postgres://studio:studio-ci@localhost:5432/studio_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+      - run: out=$(gofmt -l .); rc=$?; if [ $rc -ne 0 ]; then echo "gofmt execution failed"; exit $rc; fi; test -z "$out"
+      - run: go vet ./...
+      - run: go build ./...
+      # Serial packages (-p 1): DB-backed suites share one database and
+      # truncate tables, so parallel packages interfere. Mirrors Miniapp CI.
+      - run: go test -p 1 ./...

@@ -1,0 +1,5 @@
+{{define "content"}}
+<h1>Deployment result</h1>
+<p>Status: {{.Deploy.status}}{{with .Deploy.url}} — <a href="{{.}}">{{.}}</a>{{end}}{{with .Deploy.error}} ({{.}}){{end}}</p>
+<p><a href="/apps/{{.AppID}}/deploy">Back to deployment</a> · <a href="/">Home</a></p>
+{{end}}

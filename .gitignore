@@ -1,0 +1,28 @@
+# Binaries and build output
+/miniapp-studio
+*.exe
+*.test
+*.out
+
+# Go coverage and profiling
+coverage*.out
+*.prof
+cpu.out
+mem.out
+
+# Dependencies (fetched, never committed)
+/vendor/
+
+# Local secrets and environment — never commit credential values
+.env
+.env.*
+*.pem
+*.key
+secrets/
+!.github/workflows/
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
