@@ -146,7 +146,17 @@ func applyEvent(ctx context.Context, call registry.ToolCall, tenant string, b bu
 		return applyYield(ctx, call, tenant, b, in)
 	case evtCompleted, evtFailed:
 		persistArtifacts(ctx, call, tenant, b.ID, in.Payload)
-		if b.Status != buildRunning {
+		status := b.Status
+		if status == buildAssigned {
+			// The run finished before its started arrived (lost or
+			// reordered): step through running so the terminal state
+			// applies instead of stranding the build assigned forever.
+			if err := transitionBuild(ctx, call.Tx, tenant, b.ID, buildRunning); err != nil {
+				return false, err
+			}
+			status = buildRunning
+		}
+		if status != buildRunning {
 			return false, nil
 		}
 		to := buildSucceeded
@@ -184,12 +194,20 @@ func applyEvent(ctx context.Context, call registry.ToolCall, tenant string, b bu
 }
 
 // applyYield parks the build on an agent question. Yields apply to running
-// builds (park) and waiting builds (supersede the open question); anything
-// else records history without touching turns — a question from a
-// non-running build means the gateway skipped started/completed discipline,
-// which is evidence to investigate, not state to apply.
+// builds (park) and waiting builds (supersede the open question). An
+// assigned build joins too: the authenticated yield proves a live run
+// whose started event was lost or reordered, so the build steps through
+// running to waiting instead of stranding the agent on a question Studio
+// never parks. Anything else records history without touching turns.
 func applyYield(ctx context.Context, call registry.ToolCall, tenant string, b buildRow, in ingestIn) (bool, error) {
-	if b.Status != buildRunning && b.Status != buildWaitingUser {
+	status := b.Status
+	if status == buildAssigned {
+		if err := transitionBuild(ctx, call.Tx, tenant, b.ID, buildRunning); err != nil {
+			return false, err
+		}
+		status = buildRunning
+	}
+	if status != buildRunning && status != buildWaitingUser {
 		return false, nil
 	}
 	var kind string
@@ -270,7 +288,7 @@ func applyYield(ctx context.Context, call registry.ToolCall, tenant string, b bu
 		questionID, tenant, b.ID, turnID, kind, body, in.EventID, options); err != nil {
 		return false, dbErr(err, "question already recorded")
 	}
-	if b.Status == buildRunning {
+	if status == buildRunning {
 		return true, transitionBuild(ctx, call.Tx, tenant, b.ID, buildWaitingUser)
 	}
 	// Supersede path: the build already waits; turns and questions moved.

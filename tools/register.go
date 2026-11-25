@@ -62,7 +62,7 @@ var toolDefs = []toolDef{
 	{ToolMessageSend, "Append one user message and ensure an open build, atomically.", "conversation_id",
 		`{"type":"object","properties":{"conversation_id":{"type":"string","maxLength":128},"body":{"type":"string","maxLength":65536}},"required":["conversation_id","body"],"additionalProperties":false}`},
 	{ToolBuildCreate, "Open one build on a conversation with turn 1.", "conversation_id",
-		`{"type":"object","properties":{"conversation_id":{"type":"string","maxLength":128},"title":{"type":"string","maxLength":256},"application_id":{"type":"string","maxLength":128}},"required":["conversation_id"],"additionalProperties":false}`},
+		`{"type":"object","properties":{"conversation_id":{"type":"string","maxLength":128},"title":{"type":"string","maxLength":256},"application_id":{"type":"string","maxLength":128},"model":{"type":"string","maxLength":128}},"required":["conversation_id"],"additionalProperties":false}`},
 	{ToolBuildProvision, "Provision one Builder Sprite and install the gateway.", "build_id",
 		`{"type":"object","properties":{"build_id":{"type":"string","maxLength":128},"studio_url":{"type":"string","maxLength":512}},"required":["build_id","studio_url"],"additionalProperties":false}`},
 	{ToolBuildUpgrade, "Replace the builder gateway binary after verifying all builds idle (force overrides).", "build_id",

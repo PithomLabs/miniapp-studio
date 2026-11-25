@@ -195,12 +195,12 @@ func (d Deps) messageSend(ctx context.Context, call registry.ToolCall) (json.Raw
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, dbErr(err, "")
 		}
-		created, _, err := d.createBuildTx(ctx, call.Tx, tenant, in.ConversationID, "")
+		created, _, err := d.createBuildTx(ctx, call.Tx, tenant, in.ConversationID, "", "")
 		if err != nil {
 			return nil, err
 		}
 		if err := logCommand(ctx, call.Tx, tenant, created, "assign",
-			map[string]any{"conversation_id": in.ConversationID}); err != nil {
+			map[string]any{"conversation_id": in.ConversationID, "message_id": id}); err != nil {
 			return nil, err
 		}
 		buildID = created

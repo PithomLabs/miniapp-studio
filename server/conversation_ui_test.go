@@ -52,13 +52,13 @@ func TestAnswerFlowViaUI(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("question callback = %d", code)
 	}
-	// The build is assigned; start it so the yield parks instead of absorbing.
+	// The early yield parked on the assigned build (lost-started join);
+	// the late started absorbs, and the re-ask supersedes ui-1 with ui-2.
 	code, _ = postCallback(t, srv, signedCallback(t, build, testTenant,
 		"ui-s0", "agent.started", map[string]any{}))
 	if code != http.StatusOK {
 		t.Fatalf("started callback = %d", code)
 	}
-	// Re-ask now that the build runs (the early yield recorded history only).
 	code, _ = postCallback(t, srv, signedCallback(t, build, testTenant,
 		"ui-q2", "agent.question", map[string]any{"question_id": "ui-2", "body": "Which city, really?"}))
 	if code != http.StatusOK {

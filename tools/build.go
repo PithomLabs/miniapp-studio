@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -81,24 +82,37 @@ type buildRow struct {
 	Status          string
 	AgentKind       string
 	AgentSessionRef string
+	// Model overrides the agent model for this build's assign command.
+	// Empty means the gateway default; never a Studio-side default that
+	// could silently substitute providers.
+	Model string
+	// GatewayTurn is the last turn number the gateway acknowledged
+	// executing (assign completes turn 1). Nil means no confirmed
+	// execution yet. The sender derives the next continue turn as
+	// *GatewayTurn + 1 — never from Studio turn numbers, which count
+	// yields and diverge on failure and supersede paths.
+	GatewayTurn *int
 }
 
 // requireBuild loads one tenant-owned build, locking its row for transitions.
 // Foreign or missing builds produce the identical not-found error.
 func requireBuild(ctx context.Context, tx pgx.Tx, tenantID, buildID string, forUpdate bool) (buildRow, error) {
 	var b buildRow
+	var gatewayTurn *int
 	query := `SELECT id, tenant_id, conversation_id, application_id, sprite_name,
-		 gateway_url, status, agent_kind, agent_session_ref
+		 gateway_url, status, agent_kind, agent_session_ref, model, gateway_turn
 		 FROM studio.builds WHERE id = $1 AND tenant_id = $2`
 	if forUpdate {
 		query += ` FOR UPDATE`
 	}
 	err := tx.QueryRow(ctx, query, buildID, tenantID).Scan(
 		&b.ID, &b.TenantID, &b.ConversationID, &b.ApplicationID, &b.SpriteName,
-		&b.GatewayURL, &b.Status, &b.AgentKind, &b.AgentSessionRef)
+		&b.GatewayURL, &b.Status, &b.AgentKind, &b.AgentSessionRef,
+		&b.Model, &gatewayTurn)
 	if err != nil {
 		return buildRow{}, notFoundOrDbErr(err)
 	}
+	b.GatewayTurn = gatewayTurn
 	return b, nil
 }
 
@@ -182,14 +196,31 @@ func transitionTurn(ctx context.Context, tx pgx.Tx, tenantID, turnID, to string)
 // advisory lock serializes allocators per conversation; the sequence is
 // monotonic (aborted transactions can leave gaps, which cursor replay
 // tolerates — it needs "greater than", never contiguity).
+//
+// Lock order (deadlock fix): the conversation row is locked BEFORE the
+// advisory lock, in here, for every caller. The stream INSERT's foreign
+// key takes a KeyShare on the parent conversation row implicitly —
+// without this, a build-first ingester holding the advisory lock
+// deadlocks against a conversation-first sender holding the row lock
+// (proven by TestSSEConcurrentTrafficNoGapsNoDupes going red). FOR KEY
+// SHARE is FK-compatible and never blocks fellow appenders; it only waits
+// on conversation FOR UPDATE holders (message sends), whose post-lock
+// phase never waits, so the wait graph stays acyclic.
 func appendStream(ctx context.Context, tx pgx.Tx, tenantID, convID, kind, refID, buildID string) (int64, error) {
+	var one int
+	err := tx.QueryRow(ctx,
+		`SELECT 1 FROM studio.conversations WHERE id = $1 AND tenant_id = $2 FOR KEY SHARE`,
+		convID, tenantID).Scan(&one)
+	if err != nil {
+		return 0, notFoundOrDbErr(err)
+	}
 	// Two-key lock: tenant and conversation hash independently, so no
 	// separator games (NUL bytes are illegal in Postgres text).
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, tenantID, convID); err != nil {
 		return 0, dbErr(err, "")
 	}
 	var seq int64
-	err := tx.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO studio.conversation_stream (tenant_id, conversation_id, seq, kind, ref_id, build_id)
 		 SELECT $1, $2, COALESCE(MAX(seq), 0) + 1, $3, $4, $5
 		 FROM studio.conversation_stream WHERE tenant_id = $1 AND conversation_id = $2
@@ -223,6 +254,9 @@ type buildCreateIn struct {
 	ConversationID string `json:"conversation_id"`
 	Title          string `json:"title"`
 	ApplicationID  string `json:"application_id"`
+	// Model optionally pins the agent model (provider/model id) for
+	// this build's assign command. Empty means the gateway default.
+	Model string `json:"model"`
 }
 
 // buildCreate opens one build on a conversation: the build row (assigned),
@@ -240,10 +274,13 @@ func (d Deps) buildCreate(ctx context.Context, call registry.ToolCall) (json.Raw
 	if in.ConversationID == "" {
 		return nil, errInvalidArguments()
 	}
+	if in.Model != "" && !validModelID(in.Model) {
+		return nil, fmt.Errorf("studio: model must look like provider/model")
+	}
 	if _, err := requireConversation(ctx, call.Tx, tenant, in.ConversationID, false); err != nil {
 		return nil, err
 	}
-	buildID, turnID, err := d.createBuildTx(ctx, call.Tx, tenant, in.ConversationID, in.ApplicationID)
+	buildID, turnID, err := d.createBuildTx(ctx, call.Tx, tenant, in.ConversationID, in.ApplicationID, in.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -259,16 +296,17 @@ func (d Deps) buildCreate(ctx context.Context, call registry.ToolCall) (json.Raw
 
 // createBuildTx opens the build row, turn 1, and the system stream note.
 // Shared by build.create and the message.send ensure step so both produce
-// identical builds.
-func (d Deps) createBuildTx(ctx context.Context, tx pgx.Tx, tenantID, convID, appID string) (string, string, error) {
+// identical builds. model pins the agent model (provider/model id), or
+// empty for the gateway default.
+func (d Deps) createBuildTx(ctx context.Context, tx pgx.Tx, tenantID, convID, appID, model string) (string, string, error) {
 	buildID, err := randomID()
 	if err != nil {
 		return "", "", err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO studio.builds (id, tenant_id, conversation_id, application_id, status)
-		 VALUES ($1, $2, $3, $4, 'assigned')`,
-		buildID, tenantID, convID, appID); err != nil {
+		`INSERT INTO studio.builds (id, tenant_id, conversation_id, application_id, status, model)
+		 VALUES ($1, $2, $3, $4, 'assigned', $5)`,
+		buildID, tenantID, convID, appID, model); err != nil {
 		return "", "", dbErr(err, "")
 	}
 	turnID, err := randomID()
@@ -286,24 +324,51 @@ func (d Deps) createBuildTx(ctx context.Context, tx pgx.Tx, tenantID, convID, ap
 	return buildID, turnID, nil
 }
 
-// logCommand records one outbound gateway command for retry and evidence.
-// Phase A has no sender; the rows are the contract Phase B will drive.
+// validModelID accepts provider/model identifiers — provider plus at
+// least one non-empty path segment, since real identifiers nest
+// (openrouter/deepseek/deepseek-v4.1-flash). A typo fails at
+// build.create instead of becoming a cloud-side failure.
+func validModelID(model string) bool {
+	parts := strings.Split(model, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// logCommand records one outbound gateway command for the sender loop to
+// drive exactly once per row (the row id is the stable gateway message
+// id across retries) and for evidence afterwards.
 func logCommand(ctx context.Context, tx pgx.Tx, tenantID, buildID, kind string, payload map[string]any) error {
+	_, err := LogCommandTx(ctx, tx, tenantID, buildID, kind, payload)
+	return err
+}
+
+// LogCommandTx is the exported logCommand: the sender loop (server
+// package) enqueues recovery rows in its own settlement transactions and
+// needs the fresh row id for the supersede linkage. Same row shape,
+// same queued start; the id is returned for evidence detail.
+func LogCommandTx(ctx context.Context, tx pgx.Tx, tenantID, buildID, kind string, payload map[string]any) (string, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("studio: encode command: %w", err)
+		return "", fmt.Errorf("studio: encode command: %w", err)
 	}
 	id, err := randomID()
 	if err != nil {
-		return err
+		return "", err
 	}
 	// json.RawMessage (not []byte) so pgx binds the JSON codec, not bytea.
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO studio.commands (id, tenant_id, build_id, kind, payload, state)
 		 VALUES ($1, $2, $3, $4, $5, 'queued')`, id, tenantID, buildID, kind, json.RawMessage(raw)); err != nil {
-		return dbErr(err, "")
+		return "", dbErr(err, "")
 	}
-	return nil
+	return id, nil
 }
 
 type buildRefIn struct {

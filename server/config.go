@@ -36,6 +36,9 @@ type Config struct {
 	// GatewayOrgSecret derives per-build gateway HMAC keys. Optional:
 	// empty means gateway callbacks stay unconfigured (warned at boot).
 	GatewayOrgSecret string
+	// SenderEnabled starts the Studio-to-Gateway dispatch loop. Optional:
+	// empty/false means command rows accumulate without dispatching.
+	SenderEnabled bool
 }
 
 var rxHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -100,6 +103,10 @@ func Load() (Config, error) {
 		fail("%v", orgErr)
 	}
 	cfg.GatewayOrgSecret = orgSecret
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("STUDIO_SENDER"))) {
+	case "1", "true", "yes":
+		cfg.SenderEnabled = true
+	}
 	if (cfg.FlyOrg == "") != (cfg.SpritesTokenFile == "") {
 		fail("STUDIO_FLY_ORG and STUDIO_SPRITES_TOKEN_FILE must be set together or not at all")
 	}

@@ -79,6 +79,11 @@ func (s *Server) handleGatewayCallback(w http.ResponseWriter, r *http.Request) {
 		case strings.Contains(msg, "unavailable"):
 			// Retryable: the gateway redelivers with the same id.
 			writeCallback(w, http.StatusServiceUnavailable, "temporarily unavailable")
+		case strings.Contains(msg, "already recorded"):
+			// Deterministic gateway-side bug (a question id reused
+			// under a fresh event id): retrying cannot help, so fail
+			// terminally instead of burning the outbox retry budget.
+			writeCallback(w, http.StatusBadRequest, "bad gateway event")
 		default:
 			s.logger.Error("callback ingest failed", "build", env.BuildID,
 				"message", env.MessageID, "detail", msg)

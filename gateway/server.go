@@ -174,7 +174,7 @@ func (s *Server) runClaimed(ctx context.Context, env Envelope) (status int, body
 	digest := payloadDigest(payload)
 	flight, shared := s.joinCall(env.BuildID, env.MessageID, digest)
 	if flight == nil {
-		return http.StatusConflict, commandBody(map[string]any{"error": "message id reused with different payload"})
+		return http.StatusConflict, commandError("payload_mismatch", "message id reused with different payload")
 	}
 	if shared {
 		select {
@@ -211,10 +211,10 @@ func (s *Server) runClaimed(ctx context.Context, env Envelope) (status int, body
 		return rec.Status, rec.Body
 	case ClaimLive:
 		if live.PayloadDigest != digest {
-			return http.StatusConflict, commandBody(map[string]any{"error": "message id reused with different payload"})
+			return http.StatusConflict, commandError("payload_mismatch", "message id reused with different payload")
 		}
 		if live.Indeterminate {
-			return http.StatusConflict, commandBody(map[string]any{"error": "command indeterminate (gateway restarted before completion); recover with continue as a new turn"})
+			return http.StatusConflict, commandError("indeterminate", "command indeterminate (gateway restarted before completion); recover with continue as a new turn")
 		}
 		// Post-recovery residue without a flight means a second
 		// gateway shares this state dir (unsupported deployment):
@@ -432,6 +432,16 @@ func commandBody(v any) []byte {
 	return raw
 }
 
+// commandError encodes a machine-readable failure: the human "error"
+// string stays byte-stable while "code" gives Studio's sender a taxonomy
+// it can classify without string parsing. Codes: already_assigned,
+// session_busy, stale_turn, session_terminal, payload_mismatch,
+// indeterminate. Responses without a code keep their standing meaning:
+// 4xx terminal for the sender's purpose, 5xx same-id retryable.
+func commandError(code, msg string) []byte {
+	return commandBody(map[string]any{"error": msg, "code": code})
+}
+
 func strField(payload map[string]any, key string) string {
 	s, _ := payload[key].(string)
 	return s
@@ -445,7 +455,7 @@ func (s *Server) assign(ctx context.Context, buildID string, payload map[string]
 		return dispatchOut{status: status, body: body, action: claimDrop}
 	}
 	if _, err := s.Sessions.Get(buildID); err == nil {
-		return complete(http.StatusConflict, commandBody(map[string]any{"error": "build already assigned"}))
+		return complete(http.StatusConflict, commandError("already_assigned", "build already assigned"))
 	}
 	prompt := strField(payload, "prompt")
 	if prompt == "" {
@@ -476,14 +486,14 @@ func (s *Server) assign(ctx context.Context, buildID string, payload map[string]
 		// assign owns the build, so this one conflicts. No stray agent
 		// exists — the adapter creates the record before launching.
 		if errors.Is(err, ErrSessionExists) {
-			return complete(http.StatusConflict, commandBody(map[string]any{"error": "build already assigned"}))
+			return complete(http.StatusConflict, commandError("already_assigned", "build already assigned"))
 		}
 		// A stray (launched but unrecorded) is ambiguous; every other
 		// Start failure means no child exists (Runner contract).
 		if errors.Is(err, ErrAgentStray) {
 			s.log().Error("gateway start stray", "build", buildID, "detail", err.Error())
 			return dispatchOut{status: http.StatusInternalServerError,
-				body:   commandBody(map[string]any{"error": "agent start ambiguous; recover with continue as a new turn"}),
+				body:   commandError("indeterminate", "agent start ambiguous; recover with continue as a new turn"),
 				action: claimIndeterminate}
 		}
 		s.log().Error("gateway start", "build", buildID, "detail", err.Error())
@@ -499,7 +509,7 @@ func (s *Server) assign(ctx context.Context, buildID string, payload map[string]
 		s.log().Error("gateway outbox", "build", buildID, "detail", err.Error())
 		s.abortRun(buildID)
 		return dispatchOut{status: http.StatusInternalServerError,
-			body:   commandBody(map[string]any{"error": "callback queue failed; run aborted, recover with continue as a new turn"}),
+			body:   commandError("indeterminate", "callback queue failed; run aborted, recover with continue as a new turn"),
 			action: claimIndeterminate}
 	}
 	return dispatchOut{status: http.StatusOK, body: commandBody(map[string]any{"session_ref": ref}),
@@ -520,7 +530,7 @@ func (s *Server) continueBuild(ctx context.Context, buildID string, payload map[
 	// Failed sessions resume (F6: explicit authorized continue as a new
 	// fenced turn); done and cancelled are terminal forever.
 	if rec.State == SessionDone || rec.State == SessionCancelled {
-		return complete(http.StatusConflict, commandBody(map[string]any{"error": "session is terminal"}))
+		return complete(http.StatusConflict, commandError("session_terminal", "session is terminal"))
 	}
 	// Turn fencing (M11): the gateway enforces Studio's turn order as
 	// defense in depth — every continue carries exactly the next turn.
@@ -534,7 +544,7 @@ func (s *Server) continueBuild(ctx context.Context, buildID string, payload map[
 	}
 	turn := int(turnFloat)
 	if turn != rec.Turn+1 {
-		return complete(http.StatusConflict, commandBody(map[string]any{"error": "stale turn: session is at turn " + itoa(rec.Turn)}))
+		return complete(http.StatusConflict, commandError("stale_turn", "stale turn: session is at turn "+itoa(rec.Turn)))
 	}
 	ch, err := s.Adapter.Continue(ctx, rec.SessionRef, UserInput{
 		QuestionID: strField(payload, "question_id"),
@@ -546,12 +556,12 @@ func (s *Server) continueBuild(ctx context.Context, buildID string, payload map[
 		// Busy means the session is legitimately occupied: no child
 		// started, so the id stays retryable (unrecorded 409).
 		if errors.Is(err, ErrSessionBusy) {
-			return drop(http.StatusConflict, commandBody(map[string]any{"error": "session has a live run; retry when idle"}))
+			return drop(http.StatusConflict, commandError("session_busy", "session has a live run; retry when idle"))
 		}
 		if errors.Is(err, ErrAgentStray) {
 			s.log().Error("gateway resume stray", "build", buildID, "detail", err.Error())
 			return dispatchOut{status: http.StatusInternalServerError,
-				body:   commandBody(map[string]any{"error": "resume ambiguous; recover with continue as a new turn"}),
+				body:   commandError("indeterminate", "resume ambiguous; recover with continue as a new turn"),
 				action: claimIndeterminate}
 		}
 		s.log().Error("gateway continue", "build", buildID, "detail", err.Error())
@@ -563,7 +573,7 @@ func (s *Server) continueBuild(ctx context.Context, buildID string, payload map[
 		s.log().Error("gateway outbox", "build", buildID, "detail", err.Error())
 		s.abortRun(buildID)
 		return dispatchOut{status: http.StatusInternalServerError,
-			body:   commandBody(map[string]any{"error": "callback queue failed; run aborted, recover with continue as a new turn"}),
+			body:   commandError("indeterminate", "callback queue failed; run aborted, recover with continue as a new turn"),
 			action: claimIndeterminate}
 	}
 	return dispatchOut{status: http.StatusOK, body: commandBody(map[string]any{"resumed": true}),
@@ -589,18 +599,18 @@ func (s *Server) cancelBuild(ctx context.Context, buildID string) dispatchOut {
 	// or ack is uncertain. A fresh id re-cancel converges (already-true).
 	if err := s.Adapter.Cancel(ctx, rec.SessionRef); err != nil {
 		s.log().Error("gateway cancel", "build", buildID, "detail", err.Error())
-		return indeterminate(commandBody(map[string]any{"error": "cancel ambiguous; retry with a new id"}))
+		return indeterminate(commandError("indeterminate", "cancel ambiguous; retry with a new id"))
 	}
 	if err := s.Sessions.Update(buildID, func(r *SessionRecord) { r.State = SessionCancelled }); err != nil {
 		s.log().Error("gateway cancel record", "build", buildID, "detail", err.Error())
-		return indeterminate(commandBody(map[string]any{"error": "cancel ambiguous; retry with a new id"}))
+		return indeterminate(commandError("indeterminate", "cancel ambiguous; retry with a new id"))
 	}
 	if err := s.emit(buildID, "agent.cancelled_ack", map[string]any{}); err != nil {
 		s.log().Error("gateway outbox", "build", buildID, "detail", err.Error())
 		// The cancel stands (record is cancelled) but its
 		// acknowledgement was lost: flag it for reconciliation.
 		s.markDegraded(buildID, "cancelled acknowledgement lost")
-		return indeterminate(commandBody(map[string]any{"error": "cancel ambiguous; retry with a new id"}))
+		return indeterminate(commandError("indeterminate", "cancel ambiguous; retry with a new id"))
 	}
 	return complete(http.StatusOK, commandBody(map[string]any{"cancelled": true}))
 }
@@ -622,6 +632,11 @@ func (s *Server) statusBuild(buildID string) (int, []byte) {
 		"session_ref": rec.SessionRef, "state": rec.State,
 		"agent_alive": alive, "detail": detail,
 		"outbox_queued": queued, "outbox_failed": failed,
+		// turn is the last turn the gateway accepted (assign lands
+		// turn 1). Studio reconciles its tracked gateway_turn from
+		// this field after stale-turn and indeterminate outcomes —
+		// never from its own turn counters.
+		"turn": rec.Turn,
 	}
 	if rec.Degraded {
 		out["degraded"] = true

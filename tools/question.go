@@ -123,8 +123,22 @@ func (d Deps) questionAnswer(ctx context.Context, call registry.ToolCall) (json.
 	if err := transitionBuild(ctx, call.Tx, tenant, q.BuildID, buildRunning); err != nil {
 		return nil, err
 	}
+	// Freeze the gateway turn this answer continues as: the tracked
+	// last-acked turn plus one. NULL means the serial ordered sender has
+	// exactly one unadopted accept — the turn-1 assign whose yield asked
+	// — so it freezes exactly 2. Out-of-band gateway drives can still
+	// diverge the freeze, and those self-heal through the sender's
+	// status-reconcile supersede. Frozen here, under the build lock, so
+	// the row id forever identifies one immutable (turn, content) pair
+	// the gateway's payload fencing can rely on.
+	next := 1
+	if b.GatewayTurn != nil {
+		next = *b.GatewayTurn
+	}
+	next++
 	if err := logCommand(ctx, call.Tx, tenant, q.BuildID, "continue",
-		map[string]any{"question_id": q.ID, "kind": q.Kind, "answer": in.Answer}); err != nil {
+		map[string]any{"question_id": q.ID, "kind": q.Kind, "answer": in.Answer,
+			"turn": float64(next)}); err != nil {
 		return nil, err
 	}
 	msgID, seq, err := appendMessage(ctx, call.Tx, tenant, b.ConversationID, "user", in.Answer)

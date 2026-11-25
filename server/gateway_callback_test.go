@@ -245,3 +245,21 @@ func TestCallbackUnconfigured(t *testing.T) {
 		t.Errorf("status = %d, want 503", code)
 	}
 }
+
+// TestCallbackDuplicateQuestionIDFailsTerminally pins handoff honesty: a
+// question id reused under a fresh event id is a deterministic gateway
+// bug, so it fails 400 (terminal) instead of 500 (retry poison).
+func TestCallbackDuplicateQuestionIDFailsTerminally(t *testing.T) {
+	srv := callbackServer(t)
+	_, build := setupBuild(t, srv, testTenant)
+	code, _ := postCallback(t, srv, signedCallback(t, build, testTenant,
+		"dup-e1", "agent.question", map[string]any{"question_id": "dup-1", "body": "Q?"}))
+	if code != http.StatusOK {
+		t.Fatalf("first question = %d", code)
+	}
+	code, ack := postCallback(t, srv, signedCallback(t, build, testTenant,
+		"dup-e2", "agent.question", map[string]any{"question_id": "dup-1", "body": "Q again?"}))
+	if code != http.StatusBadRequest {
+		t.Fatalf("reused question id = %d %v, want 400", code, ack)
+	}
+}

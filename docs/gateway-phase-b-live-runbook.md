@@ -18,32 +18,71 @@ see §2); all `studio`/`gateway` commands run from `$REPO` unless noted.
    retrying or improvising.
 4. Finish with §13 (cleanup or explicit retention) no matter what.
 
-## §1 Owner decisions required (all blocking)
+## §1 Owner decisions (recorded)
 
-| # | Decision | Options | Default if deferred |
+| # | Decision | Resolution | Status |
 |---|---|---|---|
-| D1 | Fly organization for builders | name it | — (blocking) |
-| D2 | Model provider + auth for OpenCode | provider; owner-provisioned auth | — (blocking for agent runs) |
-| D3 | Studio callback reachability | (a) owner machine + tunnel, (b) Fly-hosted Studio | — (blocking; see §9) |
-| D4 | Builder retention after proof | destroy to zero, or retain named builder | destroy to zero |
-| D5 | System packages (node≥20, bun, git, curl) | preinstall in image, or apt-install live | discover in §7, decide then |
-| D6 | Pin drift | re-verify per §2; any drift needs explicit re-pin approval | hold pins |
+| D1 | Fly organization for builders | `isagani-mendoza` (exact slug; no new org) | DECIDED |
+| D2 | Model provider + auth for OpenCode | Primary `opencode` (default `deepseek-v4.1-flash-free`, alt `mimo-v2.6-flash-free`); OpenRouter same-model fallback; owner key | DECIDED (§8b) |
+| D3 | Studio callback reachability | (b) Fly-hosted Studio through Fly Proxy | STRATEGY DECIDED (deployment + callback verification outstanding) |
+| D4 | Builder retention after proof | destroy to zero | DEFAULT ACCEPTED |
+| D5 | System packages (node≥20, bun, git, curl) | preinstall in image, or apt-install live | AT EXECUTION (§7 discovery) |
+| D6 | Pin drift | hold existing pins; any drift needs STOP + separate re-pin decision | DECIDED |
+
+D2 auth note: credentials must be available to the supervised
+OpenCode process inside the Builder — dashboard or dev-machine
+possession does not establish that. Delivery mechanism: the §8b
+owner ceremony into OpenCode's native credential store (no
+Gateway injection API; owner ceremony + §10 proof required
+before any agent run counts as evidence). Model selection rides
+the assign-payload `model` field; no automatic failover exists.
 
 D3 note: the gateway POSTs callbacks to Studio's `/gw/v1/callback`, so
-Studio must be reachable FROM the sprite during live proofs. Pick (a) or
-(b) before §9; the steps branch on it. There is no third path that
-doesn't weaken the proof — do not substitute a request-catcher.
+Studio must be reachable FROM the sprite during live proofs. There
+is no third path that doesn't weaken the proof — do not substitute
+a request-catcher. §9 gates readiness (§5 env, listener table,
+`/readyz`, Builder-side round-trip).
 
 ## §2 Pins and tree state (re-verify, record, do not float)
 
 ```bash
-git status --porcelain            # record verbatim (repo has no commits yet: expect all-untracked tree)
+git branch --show-current         # record: must be the owner-approved branch
+git rev-parse HEAD                # record: exact HEAD SHA under test (no hardcoded expectation)
+git status --porcelain            # record verbatim
 go version                         # record
 curl -fsSL https://registry.npmjs.org/@flydotio/sprites-opencode-plugin \
   && echo "NPM-PUBLISHED (stop: needs re-pin decision)" || echo "npm-404-as-expected"
-curl -fsSL https://api.github.com/repos/anomalyco/opencode/releases?per_page=10 \
-  | grep -o '"tag_name":"v1[^"]*"' | sort -u    # expect: v1.19.6 only
+release_json="$(curl -fsSL 'https://api.github.com/repos/anomalyco/opencode/releases?per_page=10')" || {
+  echo "STOP: failed to retrieve OpenCode releases"
+  exit 1
+}
+
+v1_tags="$(printf '%s\n' "$release_json" \
+  | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v1[^"]*"' \
+  | sed -E 's/.*"(v1[^"]*)".*/\1/' \
+  | sort -u)"
+
+if [ -z "$v1_tags" ]; then
+  echo "STOP: no v1 release tags found"
+  exit 1
+fi
+
+printf '%s\n' "$v1_tags"
+
+if [ "$v1_tags" != "v1.19.6" ]; then
+  echo "STOP: unexpected v1 release set; explicit pin review required"
+  exit 1
+fi
+# expect: prints exactly v1.19.6, exit 0
 ```
+
+Tree-state rule (B1): the branch, HEAD SHA, and every working-tree
+change must be owner-recognized — reconcile them against the
+owner-approved checkout before proceeding. Do not assume zero
+commits or an all-untracked tree, and no SHA is hardcoded here so
+this gate cannot go stale. If anything is unexpected or cannot be
+reconciled: STOP and report. Purpose: establish exactly which
+source tree is being used before live operations.
 
 Expected pins (Part 1 values; any difference stops the run for a re-pin
 decision): OpenCode v1.19.6, asset `opencode-linux-x64.tar.gz` sha256
@@ -80,7 +119,7 @@ The CLI loads the standard Studio environment plus the org secret:
 ```bash
 export STUDIO_OPERATORS_FILE=... STUDIO_DATABASE_URL=... STUDIO_OWNER_DATABASE_URL=...
 export MINIAPP_KEYS_FILE=... MINIAPP_GRANTS_FILE=...
-export STUDIO_FLY_ORG='<D1>'
+export STUDIO_FLY_ORG='isagani-mendoza'  # D1 decided
 export STUDIO_SPRITES_TOKEN_FILE=/path/to/org-token  # 0600, owner-held
 export STUDIO_GATEWAY_ORG_SECRET_FILE=/path/to/org-secret  # 0600, owner-held; see below
 ```
@@ -89,6 +128,36 @@ Org secret: 32+ random bytes, generated once (`head -c 32 /dev/urandom
 | base64 > file; chmod 600 file`), stored 0600. It derives ALL build
 HMAC keys — compromise rotates every builder. Never print it; the CLI
 never echoes it (verify: no secret in any output below).
+
+Model auth (D2 decided: OpenCode primary, OpenRouter fallback).
+Model selection has an implemented path: assign-payload `model`
+(`provider/model` identifier) flows to the agent's `--model`
+flag. No Gateway credential-injection API exists by design:
+the service API carries no environment (our `ServiceRequest`
+and sprites-go v0.2.2 both expose only Cmd/Args/HTTPPort), the
+adapter launches OpenCode with no extra env (it inherits the
+gateway process environment), and the provisioned bundle
+carries no model/auth configuration. Credential delivery is
+the §8b owner ceremony into OpenCode's native store:
+OpenRouter key REQUIRED (fallback); OpenCode credential NOT
+required while step-4 catalog confirms zero input cost for
+both primary models. Owner action required before any agent
+run: complete §8b, then prove it — the §10 no-op turn
+succeeding is the end-to-end proof (a model call works); an
+auth failure there means STOP, not evidence. Hard rules: keys
+are never committed, never included in any application
+artifact, never passed in process arguments, never printed in
+logs, evidence, or agent transcripts. Keep the two mechanisms
+separate: provider keys are for model inference only; Sprites
+MCP OAuth is for the Builder's authorized Sprite capabilities
+only. Fallback cost controls (owner-confirmed spending limit,
+no auto-recharge, bounded attempts, per-build usage evidence)
+must be in place before any fallback use.
+
+D3 note: Fly-hosted Studio deployment itself is owner-established
+(no in-tree Studio-on-Fly deploy path exists); §9's listener
+table, `/readyz` gate, and Builder-side round-trip verify the
+result, not the deployment procedure.
 
 ## §6 Provision the builder
 
@@ -139,6 +208,25 @@ builder and confirm the first build's session is undisrupted
 (`status` on the first build still answers; no new `agent.failed`).
 Record the observation.
 
+> **N8 RESTRICTION — re-provisioning permission window (F-R1).**
+> Staging is recreated with permissive modes on every provision
+> and locked down only when setup runs, so re-provisioning while
+> an untrusted sibling agent process is live exposes a transient
+> window. This race is NOT fixed in provisioning code. Before
+> every re-provision on a builder with running agents:
+>
+> ```bash
+> sprite exec -s '<SPRITE>' -- stat -c '%a %n' /srv/studio-staging  # expect: 700 before you start
+> sprite exec -s '<SPRITE>' -- ps -o user=,args= -C opencode        # expect: no live untrusted sibling agents
+> ```
+>
+> - Verify staging is mode `0700` before re-provisioning.
+> - Verify no live untrusted sibling agent processes exist that
+>   could exploit staging recreation.
+> - If either condition cannot be established, drain the relevant
+>   agent activity first (cancel runs, let turns complete), then
+>   re-verify, then re-provision. Record what was drained and why.
+
 ## §6.5 Gateway upgrade (explicit replacement only)
 
 > **N2 PROHIBITION — DO NOT INVOKE LIVE.** The upgrade idle check has
@@ -162,8 +250,9 @@ go run ./cmd/studio gateway upgrade --tenant '<TENANT>' --build '<BUILD>' \
 Expected: JSON with `"upgraded": true`, `"gateway_sha256"`, and
 `"idle_checked"` (every build on the builder verified without a live
 agent run). A live run refuses without `--force`; `--force` replaces
-anyway and reports `"force": true` — use only after draining agent
-runs deliberately. After upgrade, re-run §6 verification (service
+anyway and reports `"force": true` — use only after N2 closure and
+deliberate draining of agent runs (never to bypass the prohibition
+above). After upgrade, re-run §6 verification (service
 running, keys present) and §9 (status answers).
 
 ## §7 Privilege and package discovery (honest unknowns — observe, decide)
@@ -285,10 +374,148 @@ Per the merged amendment §E. Attempt in order; record which rung worked:
 Record: rung used, grant parameters, `get_fly_context` output (redact
 any token material before pasting into evidence).
 
-## §9 Status round trip
+## §8b Provider authentication ceremony (OpenRouter + OpenCode)
 
-Studio must be serving (D3): start it per the standard deploy, confirm
-its public/tunneled base URL, and record it. Then:
+Owner-driven, after §7b identity proofs, before §10 (no agent run
+may precede it — §10 is the first model call). No Gateway code
+changes: this uses OpenCode v1.19.6's native credential store.
+
+Model mapping (owner-decided; STOP on any catalog mismatch):
+
+| Role | Provider | Model ID |
+|---|---|---|
+| Default | `opencode` | `opencode/deepseek-v4.1-flash-free` |
+| Approved alternative | `opencode` | `opencode/mimo-v2.6-flash-free` |
+| Fallback for DeepSeek | `openrouter` | `openrouter/deepseek/deepseek-v4.1-flash` |
+| Fallback for MiMo | `openrouter` | `openrouter/xiaomi/mimo-v2.6-flash` |
+
+Fallback preserves the same model family, never another model or
+provider. OpenRouter routes are paid (owner-recorded 2026-11-25:
+DeepSeek $0.051/$0.567, MiMo $0.14/$0.28 per M in/out tokens —
+recheck at execution). No automatic failover exists in the
+Gateway: selection via `--model` is manual per run. Configured
+credentials ≠ proven failover.
+
+1. Open the interactive console (owner-verified Sprite command):
+   ```bash
+   sprite console -s '<SPRITE>'
+   ```
+2. Become the agent identity — never root or `studio-gw` — and
+   confirm it matches the §7b agent uid:
+   ```bash
+   su - studio-agent
+   id -u  # expect: <AGENT_UID from §7b>
+   ```
+3. HOME/XDG/data-dir gate (critical-path check — a mismatch
+   means STOP, do not enter any key). The Gateway child
+   inherits the service environment with no override
+   (`Supervisor.Start`: `cmd.Env = append(os.Environ(), ...)`
+   with nil extras), so the supervised agent reads
+   credentials from the *service* env's data dir, not
+   necessarily this login shell's. Compare both:
+   ```bash
+   echo "shell: HOME=$HOME XDG_DATA_HOME=${XDG_DATA_HOME:-<unset>}"
+   tr '\0' '\n' < /proc/<GW_PID>/environ | grep -E '^(HOME|XDG_DATA_HOME)='  # service env (<GW_PID> from §7a)
+   getent passwd studio-agent  # fallback identity if service env lacks HOME
+   ```
+   Compute each side's OpenCode data dir (`$XDG_DATA_HOME/
+   opencode`, else `$HOME/.local/share/opencode`; unset HOME
+   resolves via passwd lookup by euid). Proceed ONLY if both
+   sides agree byte-for-byte. On any divergence: STOP and
+   report the two environments as the root cause — do not
+   enter the key into the wrong home and do not work around it.
+4. Verify the catalog from the pinned CLI (still as
+   `studio-agent`), and confirm zero input cost for both
+   OpenCode models plus the presence of both fallback IDs:
+   ```bash
+   opencode models opencode --verbose --refresh
+   opencode models openrouter --verbose --refresh
+   ```
+   Expect: `deepseek-v4.1-flash-free` and `mimo-v2.6-flash-free`
+   listed with zero input cost; `deepseek/deepseek-v4.1-flash`
+   and `xiaomi/mimo-v2.6-flash` present under openrouter.
+   Record full output (redact nothing — catalogs carry no
+   secrets). Any missing ID or nonzero primary cost: STOP.
+5. Authenticate OpenRouter (REQUIRED for fallback) via the
+   native hidden prompt. No separate OpenCode credential is
+   needed provided step 4 confirmed zero input cost (pinned
+   `provider.ts` retains zero-cost models under the `public`
+   placeholder and filters paid ones without a credential):
+   ```bash
+   opencode auth login --provider openrouter
+   ```
+   Enter the owner's dedicated, spending-limited key at the
+   hidden prompt. Never pass it as an argument, never print
+   it, never run `opencode auth export`, never copy it into
+   the Builder workspace.
+6. Verify without displaying secrets:
+   ```bash
+   opencode auth list  # expect: openrouter configured (no values shown)
+   stat -c '%U %a %n' <data-dir-from-step-3>/auth.json  # expect: studio-agent 600
+   stat -c '%U %a %n' <data-dir-from-step-3>            # record parent perms; must not be world-writable
+   ```
+   Never `cat` the credential file. Any other owner/mode:
+   STOP and report.
+7. Mechanism separation (restated, enforced by distinct
+   stores): the OpenRouter key authenticates model inference
+   only; Sprites MCP OAuth (§8) authorizes Builder Sprite
+   capabilities only. Neither substitutes for the other.
+8. End-to-end proof is §10: the supervised no-op assignment
+   must explicitly select `opencode/deepseek-v4.1-flash-free`
+   and succeed. Record provider ID, model ID, OpenCode
+   version, and attempt outcome. Auth failure there means
+   STOP, not evidence.
+
+Same-UID exposure warning: `0600` protects `auth.json` from
+other OS users, NOT from the agent's own tools — the supervised
+agent runs as `studio-agent` and can read its own credential
+file. This is inherent to the approved design, not a
+misconfiguration. Mitigations are procedural: dedicated key,
+strict spending limit, no auto-recharge, revoke after the
+proof unless continued use is explicitly authorized, never
+use a personal/broad key. Record the key's spending limit
+and revocation plan in the evidence; do not record the key.
+
+Studio must be serving (D3) and reachable from the Builder Sprite
+at the D3 callback URL chosen in §1. With the §5 environment
+loaded, start it:
+
+```bash
+go run ./cmd/studio serve
+```
+
+The command takes no flags; it listens on `STUDIO_LISTEN`. The
+required listener depends on the D3 deployment — the default is
+only correct for one of them:
+
+| D3 deployment      | Required `STUDIO_LISTEN` |
+| ------------------ | ------------------------ |
+| Owner machine + tunnel | `127.0.0.1:8080` (default) |
+| Fly Proxy          | `0.0.0.0:<internal_port>` (Fly requires a wildcard bind) |
+| Fly private 6PN    | `fly-local-6pn:<port>` (direct private access) |
+
+Set `STUDIO_LISTEN` accordingly before starting (a loopback
+listener behind Fly Proxy receives nothing — this fails
+silently at the network layer, so get it right here). For D3
+option (a), forward the local listen port through the owner's
+tunnel; for (b), use the Fly-hosted base URL.
+
+Readiness requires `/readyz`, not just `/healthz`: the former
+checks database connectivity and schema version (503 while
+migrating or unreachable); the latter only proves the handler
+responds. Confirm both, then prove the actual callback route
+from the Builder side — an unsigned POST must reach Studio
+and be rejected with 401 (route proven, auth enforced):
+
+```bash
+curl <base-url>/readyz                                    # expect: HTTP 200 {"status":"ready"}
+sprite exec -s '<SPRITE>' -- curl -s -o /dev/null -w "%{http_code}" -X POST <base-url>/gw/v1/callback  # expect: 401
+```
+
+Record the base URL, both results, and the listener used —
+every step from here depends on them. The full signed
+round-trip proof completes in §10 when the `agent.started`
+callback lands in the Studio conversation stream. Then:
 
 ```bash
 go run ./cmd/studio gateway command --tenant '<TENANT>' --build '<BUILD>' --cmd status
@@ -303,12 +530,19 @@ Send the assignment (exact prompt — do not embellish):
 
 ```bash
 go run ./cmd/studio gateway command --tenant '<TENANT>' --build '<BUILD>' --cmd assign \
-  --payload '{"prompt":"Reply with exactly the single line BUILDER-ALIVE. Do not use any tools.","workspace_id":"<TENANT>"}'
+  --payload '{"prompt":"Reply with exactly the single line BUILDER-ALIVE. Do not use any tools.","workspace_id":"<TENANT>","model":"opencode/deepseek-v4.1-flash-free"}'
 ```
 
-Expected, in order (record each with timestamps): `agent.started`
-callback lands (check Studio conversation stream); progress/message
-callbacks stream; run goes idle; `agent.completed` lands. Then:
+The `model` field explicitly selects the D2 default; do not omit
+it or substitute another model. Expected, in order (record each
+with timestamps): `agent.started` callback lands (check Studio
+conversation stream); progress/message callbacks stream; run goes
+idle; `agent.completed` lands. Record provider ID, model ID,
+OpenCode version, and attempt outcome — this success is the
+authoritative proof of inference. A separate controlled test
+proves fallback behavior only if automatic failover is
+implemented and accepted; it is neither today, so no fallback
+claim may be made from this section. Then:
 
 ```bash
 go run ./cmd/studio gateway command --tenant '<TENANT>' --build '<BUILD>' --cmd fetch_artifact \
@@ -320,7 +554,12 @@ and strict. (Real artifact fetch is exercised in Phase D.)
 
 ## §11 Sleep, wake, and resume observation
 
-1. Note the gateway service PID + agent session ref (status command).
+1. Note the gateway service PID + agent session ref (status command),
+   and record the live agent PIDs (F-R2/N5 — needed for the step 5
+   absence check):
+   ```bash
+   sprite exec -s '<SPRITE>' -- ps -o pid=,user=,args= -C opencode  # record every PID verbatim
+   ```
 2. Idle the sprite: no commands for 90s (idle timeout reported ~30s,
    third-party — observe, don't assume).
 3. `sprite info` / status: record whether the sprite slept
@@ -329,7 +568,17 @@ and strict. (Real artifact fetch is exercised in Phase D.)
    survived (warm) or the gateway relaunched (cold). BOTH outcomes are
    acceptable; record which occurred.
 5. If cold (gateway relaunched): expect an `agent.failed` recovery
-   callback in Studio ("gateway restarted…"). Recovery never
+   callback in Studio ("gateway restarted…"). Then verify orphan
+   cleanup explicitly (F-R2/N5) — do NOT claim cleanup succeeded
+   solely because the callback arrived:
+   ```bash
+   sprite exec -s '<SPRITE>' -- ps -o pid=,user=,args= -C opencode  # expect: none of the step-1 PIDs
+   for p in <PID_FROM_STEP_1>...; do sprite exec -s '<SPRITE>' -- ps -p $p -o pid=,args=; echo "pid $p expect: no such process"; done
+   ```
+   Every pre-restart agent PID must be absent. Report any remaining
+   process, any PID that now belongs to a different command
+   (PID reuse — record the new argv), or any ambiguous identity.
+   Only then resume. Recovery never
    auto-restarts: resume deliberately with a continue as a NEW fenced
    turn (the next turn number after the failed turn — turn 2 if the
    §10 assign was turn 1):
@@ -361,7 +610,7 @@ replace reports with observations.
 | provision: sprite exists, install fails | partial state | fix cause, re-run (attach converges) |
 | provision: binary differs, run gateway upgrade | staged binary drifted from deployed | do NOT re-provision; STOP and report — §6.5 upgrade is prohibited live until N2 closes |
 | provision: service unhealthy / inspection failed | needs diagnosis | STOP touching it; diagnose and report (upgrade path needs N2 closure first) |
-| upgrade: live agent run | guard held | drain runs, or repeat with --force deliberately |
+| upgrade: live agent run | guard held — live upgrade prohibited (N2) | STOP and report. Live `gateway upgrade` remains prohibited until N2 is fixed and tested, as stated in §6.5. Do not use `--force` to bypass the prohibition. |
 | setup.sh: "must run as root" | no privilege channel | STOP, report (§7) |
 | setup.sh: missing prerequisite | image lacks packages | D5 install, re-run |
 | setup.sh: checksum mismatch | asset drift/tamper | STOP, report; do not override |

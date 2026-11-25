@@ -140,17 +140,35 @@ per-row proof lives in correction report §7 as amended.
 - `gofmt -l .` empty (0); `go vet ./...` 0; `go build ./...` 0.
 - `go test -p 1 -count=1 ./...` → 13/13 ok (exit 0).
 - `go test -race -p 1 -count=1` six packages → all ok (exit 0).
-- Targeted, all executed green with zero skips: 14 F7/provision/
-  upgrade/bundle tests (incl. cross-session lock proof,
-  digest echoes), `TestCallbackKDFWiring` +
-  `TestCallbackKDFRejectsWrongSecret` + `TestDeriveKey` (M15),
-  15 migration/RLS/tenant tests (`TestMigration*`,
-  `TestRLSEnable000016`, `TestPhaseARLSEnforced`,
-  `TestTenant*`, cross-tenant reference/cascade, pool reset).
-- Full-suite verbose audit: 354 pass, 1 skip
-  (`TestCheckAgentSpawnRealDrop` — requires root by design); the
-  single verbose-run failure was the §10 `TestAdapterStatus`
-  flake (suite green on re-run).
+- Targeted, all executed green with zero skips. F-R3 exact sets:
+  14 DB-backed F7/provision/upgrade tests — the DB-backed subset
+  of the 16 tests in `tools/provision_test.go`,
+  `tools/provision_f7_test.go`, `tools/upgrade_test.go` (the 2
+  pure ones, `TestProvisionBundlePinned` and `TestShortIDSafe`,
+  also pass): `TestBuildProvision{Flow,ServicePinned,Refusals,
+  Unconfigured,AttachAndRetry,PreservesHealthyService,
+  UnhealthyFailsClosed,InspectionErrorFailsClosed,
+  DigestDriftRefuses,EchoesDigest,SerializesAcrossSessions}` +
+  `TestBuildUpgrade{IdleReplaces,LiveRefuses,Refusals}` (incl.
+  cross-session lock proof, digest echoes). M15:
+  `TestCallbackKDFWiring` + `TestCallbackKDFRejectsWrongSecret`
+  + `TestDeriveKey`. 15 migration/RLS/tenant tests, exactly the
+  `-run` set executed: `TestMigrationRefusesCrossTenantData`,
+  `TestRLSEnable000016`, `TestMigrateDownRoundTrip`,
+  `TestMigrateIdempotent`, `TestMigrateRequiresFramework`,
+  `TestPhaseARLSEnforced`, `TestTenantIsolation`,
+  `TestTenantContextRequired`, `TestTenantWriteChecked`,
+  `TestInTenantTxRollback`, `TestCrossTenantReferenceRejected`,
+  `TestSameTenantReferenceAccepted`,
+  `TestCascadeStaysInTenant`, `TestDirectSessionReadDenied`,
+  `TestPoolResetsTenantSetting`. The independent review
+  `plans/adv_review_prompt14.md` §6 separately reports its
+  broader migration/RLS family as green; that family's exact
+  membership and count are not re-asserted in this report.
+- Full-suite verbose audit: 354 pass + 1 pre-existing flake
+  failure (§10 `TestAdapterStatus`, suite green on re-run) + 1
+  skip (`TestCheckAgentSpawnRealDrop` — requires root by
+  design) = 356 total, reconciling the exact test count.
 
 ## 8. R-NET upstream provenance verification
 

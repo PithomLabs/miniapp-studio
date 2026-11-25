@@ -223,20 +223,33 @@ func TestIngestCrossTenant(t *testing.T) {
 	}
 }
 
-func TestIngestYieldRequiresRunning(t *testing.T) {
+func TestIngestYieldOnAssignedParks(t *testing.T) {
 	h := setupFakes(t)
 	conv := createConversation(t, h, "nr-c", toolCredA)
 	buildID, _ := createBuild(t, h, conv, "nr-b", toolCredA)
-	// A question before started: history only, no question row, no move.
+	// CONTRACT CHANGE (prompt18 U2, needs owner ratification): a yield on
+	// an assigned build used to absorb (history only). Absorbing strands
+	// the agent — it waits for an answer to a question Studio never
+	// parks, and the later completed/failed absorbs too, wedging the
+	// build assigned forever with no recovery path. The authenticated
+	// yield proves a live run whose started was lost or reordered, so it
+	// parks: assigned → running → waiting_user with the question open.
 	got := ingest(t, h, buildID, "nr-q", evtQuestion,
 		map[string]any{"question_id": "nr-1", "body": "Early?"}, "nr-k", toolCredA)
-	if got["transitioned"] == true || got["build_status"] != buildAssigned {
-		t.Errorf("early yield = %v, want absorbed", got)
+	if got["transitioned"] != true || got["build_status"] != buildWaitingUser {
+		t.Fatalf("early yield = %v, want parked/waiting_user", got)
 	}
 	st := invoke(t, h, ToolBuildStatus,
 		map[string]any{"build_id": buildID}, "nr-st", toolCredA)
-	if qs, _ := st["open_questions"].([]any); len(qs) != 0 {
-		t.Errorf("open questions = %d, want 0", len(qs))
+	qs, _ := st["open_questions"].([]any)
+	if len(qs) != 1 {
+		t.Fatalf("open questions = %d, want 1", len(qs))
+	}
+	if first, _ := qs[0].(map[string]any); first["id"] != "nr-1" {
+		t.Errorf("open question = %v, want nr-1", first)
+	}
+	if turn, _ := st["turn"].(map[string]any); turn["status"] != turnWaitingUser {
+		t.Errorf("turn = %v, want waiting_user", turn)
 	}
 }
 

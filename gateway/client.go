@@ -29,10 +29,48 @@ type Client struct {
 	MaxWait  time.Duration
 }
 
+// CallError is a gateway response the caller must classify: any non-2xx,
+// or a 2xx whose body is not JSON. Error() preserves the historic message
+// text; Status and Body (nil when the body is not a JSON object) let
+// callers classify without string parsing.
+type CallError struct {
+	Status int
+	Body   map[string]any
+	msg    string
+}
+
+func (e *CallError) Error() string { return e.msg }
+
+// callRefused wraps one non-2xx response, decoding the JSON body when it
+// decodes so the machine-readable "code" survives to the caller.
+func callRefused(status int, body []byte, format string) error {
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		decoded = nil
+	}
+	return &CallError{
+		Status: status, Body: decoded,
+		msg: fmt.Sprintf(format, status, truncateBody(body)),
+	}
+}
+
 // Send delivers one command and returns the decoded response.
 func (c *Client) Send(ctx context.Context, gatewayURL string, key []byte, buildID, name string, payload map[string]any) (map[string]any, error) {
-	if buildID == "" || name == "" {
-		return nil, fmt.Errorf("gateway: build and command name required")
+	var id [16]byte
+	if _, err := crand.Read(id[:]); err != nil {
+		return nil, fmt.Errorf("gateway: message id: %w", err)
+	}
+	return c.SendWithID(ctx, gatewayURL, key, buildID, hex.EncodeToString(id[:]), name, payload)
+}
+
+// SendWithID delivers one command under a caller-supplied stable message
+// id and returns the decoded response. Studio's sender passes the durable
+// command-row id so every retry of every attempt — including after a
+// Studio crash — collapses onto the gateway's recorded outcome for that
+// id instead of executing twice.
+func (c *Client) SendWithID(ctx context.Context, gatewayURL string, key []byte, buildID, messageID, name string, payload map[string]any) (map[string]any, error) {
+	if buildID == "" || name == "" || messageID == "" {
+		return nil, fmt.Errorf("gateway: build, message id, and command name required")
 	}
 	if err := RequireSecureTransport(gatewayURL); err != nil {
 		return nil, err
@@ -40,12 +78,8 @@ func (c *Client) Send(ctx context.Context, gatewayURL string, key []byte, buildI
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	var id [16]byte
-	if _, err := crand.Read(id[:]); err != nil {
-		return nil, fmt.Errorf("gateway: message id: %w", err)
-	}
 	env := Envelope{
-		Protocol: ProtocolV1, MessageID: hex.EncodeToString(id[:]),
+		Protocol: ProtocolV1, MessageID: messageID,
 		BuildID: buildID, SentAt: time.Now().UTC().Format(time.RFC3339),
 		Kind: "command", Name: name, Payload: payload,
 	}
@@ -114,14 +148,18 @@ func (c *Client) once(ctx context.Context, url string, raw []byte) (map[string]a
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var out map[string]any
 		if err := json.Unmarshal(body, &out); err != nil {
-			return nil, true, fmt.Errorf("gateway: command decode: %w", err)
+			// Accepted but unreadable: the command executed (2xx), so
+			// callers must reconcile rather than treat this as a
+			// transport failure. Status + nil Body marks that.
+			return nil, true, &CallError{Status: resp.StatusCode,
+				msg: fmt.Sprintf("gateway: command decode: %v", err)}
 		}
 		return out, false, nil
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, true, fmt.Errorf("gateway: command status %d: %s", resp.StatusCode, truncateBody(body))
+		return nil, true, callRefused(resp.StatusCode, body, "gateway: command status %d: %s")
 	}
-	return nil, false, fmt.Errorf("gateway: command refused %d: %s", resp.StatusCode, truncateBody(body))
+	return nil, false, callRefused(resp.StatusCode, body, "gateway: command refused %d: %s")
 }
 
 func (c *Client) wait(attempt int) time.Duration {

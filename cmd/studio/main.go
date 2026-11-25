@@ -76,6 +76,17 @@ func serveOn(ctx context.Context, cfg server.Config, ln net.Listener) error {
 			fmt.Fprintf(os.Stderr, "studio: shutdown: %v\n", err)
 		}
 	}()
+	// Explicit opt-in: without STUDIO_SENDER the server serves but never
+	// dispatches, so command rows cannot move unexpectedly. A failing
+	// sender start is fatal — silently serving without dispatch would
+	// wedge every build.
+	if cfg.SenderEnabled {
+		if err := srv.StartSender(server.DefaultSenderConfig()); err != nil {
+			_ = ln.Close()
+			_ = srv.Close()
+			return fmt.Errorf("studio: sender: %w", err)
+		}
+	}
 	httpSrv := &http.Server{
 		Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second,
 	}

@@ -54,6 +54,9 @@ type Server struct {
 	closeMu  sync.Mutex
 	closed   bool
 	closeErr error
+	// sender is the Studio-to-Gateway dispatch loop. Nil unless
+	// StartSender ran; Close stops it before the pool it uses.
+	sender *Sender
 	// deployMu guards in-flight deploy workers keyed by tenant+app, so a
 	// second provision POST while one runs gets an honest conflict.
 	deployMu      sync.Mutex
@@ -254,6 +257,8 @@ func (s *Server) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
+	// The sender uses the pool: stop it before anything it touches.
+	s.stopSenderLocked()
 	if s.executor != nil {
 		if err := s.executor.Shutdown(10 * time.Second); err != nil {
 			s.closeErr = fmt.Errorf("server: executor shutdown: %w", err)
