@@ -90,7 +90,7 @@ func TestConsoleTenantScenesNeedNoFocus(t *testing.T) {
 	srv, _ := testServer(t)
 	cookie := login(t, srv, testToken)
 	for scene, want := range map[string]string{
-		"gallery": "New conversation", "evidence": "Gate ledger lands in Phase D",
+		"gallery": "New conversation", "evidence": "The artifact ledger above names every bundle",
 		"settings": "Stop everything",
 	} {
 		rec := doRequest(t, srv, http.MethodGet, "/console?scene="+scene, "", cookie)
@@ -475,18 +475,21 @@ func TestConsolePlaceholderScenes(t *testing.T) {
 	srv, _ := testServer(t)
 	cookie := login(t, srv, testToken)
 	conv := consoleConversation(t, srv, cookie, "Shop")
-	for scene, phase := range map[string]string{"spec": "Phase D", "validate": "Phase D", "connect": "Phase D", "deploy": "Phase E"} {
+	// D5 ships the Spec/Validate/Connect scenes; only Deploy still
+	// waits on Phase E. Every scene keeps the spine honest on a
+	// build-less conversation: Describe active, nothing proven.
+	for scene := range focusScenes {
 		rec := doRequest(t, srv, http.MethodGet, "/console?scene="+scene+"&conversation="+conv, "", cookie)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s = %d", scene, rec.Code)
 			continue
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, "lands in "+phase) || !strings.Contains(body, "Not built yet") {
-			t.Errorf("%s lacks the honest Phase note", scene)
+		if scene == "deploy" {
+			if !strings.Contains(body, "lands in Phase E") || !strings.Contains(body, "Not built yet") {
+				t.Errorf("%s lacks the honest Phase note", scene)
+			}
 		}
-		// Only Describe may be active (focused conversation, no builds
-		// yet); the future phase itself must stay gray.
 		if strings.Contains(body, `class="sph" data-s="proven"`) {
 			t.Errorf("%s shows a proven pill", scene)
 		}
@@ -505,8 +508,11 @@ func TestConsoleEvidenceReceipts(t *testing.T) {
 	if !strings.Contains(body, "conversation.create") || !strings.Contains(body, "succeeded") {
 		t.Errorf("evidence lacks live receipts:\n%s", body)
 	}
-	if !strings.Contains(body, "Gate ledger lands in Phase D") {
-		t.Errorf("evidence lacks the gate-ledger note")
+	if !strings.Contains(body, "The artifact ledger above names every bundle") {
+		t.Errorf("evidence lacks the artifact-ledger note")
+	}
+	if strings.Contains(body, "Artifact ledger (") {
+		t.Errorf("evidence shows a ledger with no artifacts")
 	}
 }
 
@@ -541,23 +547,41 @@ func TestConsoleEvidenceHidesStreamPolls(t *testing.T) {
 
 func TestBuildSpine(t *testing.T) {
 	b := func(status string) []any { return []any{map[string]any{"status": status}} }
+	art := func(verified bool, decision string) map[string]any {
+		return map[string]any{"verified": verified, "decision": decision}
+	}
 	cases := []struct {
 		name       string
 		conv       string
 		builds     []any
+		status     map[string]any
 		wantStates map[string]string
 	}{
-		{"no focus", "", nil, map[string]string{"Describe": "idle", "Run": "idle", "Evidence": "idle"}},
-		{"no builds", "c", nil, map[string]string{"Describe": "active", "Run": "idle"}},
-		{"assigned", "c", b("assigned"), map[string]string{"Describe": "proven", "Run": "active"}},
-		{"running", "c", b("running"), map[string]string{"Describe": "proven", "Run": "active"}},
-		{"waiting", "c", b("waiting_user"), map[string]string{"Run": "active"}},
-		{"failed", "c", b("failed"), map[string]string{"Run": "refused"}},
-		{"cancelled", "c", b("cancelled"), map[string]string{"Run": "refused"}},
-		{"succeeded", "c", b("succeeded"), map[string]string{"Run": "idle", "Describe": "proven"}},
+		{"no focus", "", nil, nil, map[string]string{"Describe": "idle", "Run": "idle", "Evidence": "idle"}},
+		{"no builds", "c", nil, nil, map[string]string{"Describe": "active", "Run": "idle"}},
+		{"assigned", "c", b("assigned"), nil, map[string]string{"Describe": "proven", "Run": "active"}},
+		{"running", "c", b("running"), nil, map[string]string{"Describe": "proven", "Run": "active"}},
+		{"waiting", "c", b("waiting_user"), nil, map[string]string{"Run": "active"}},
+		{"failed", "c", b("failed"), nil, map[string]string{"Run": "refused"}},
+		{"cancelled", "c", b("cancelled"), nil, map[string]string{"Run": "refused"}},
+		{"succeeded", "c", b("succeeded"), nil, map[string]string{"Run": "idle", "Describe": "proven"}},
+		{"unverified artifacts", "c", b("succeeded"),
+			map[string]any{"artifacts": []any{art(false, "")}},
+			map[string]string{"Validate": "active", "Evidence": "active", "Spec": "idle"}},
+		{"verified bundle", "c", b("succeeded"),
+			map[string]any{"artifacts": []any{art(true, "")}},
+			map[string]string{"Validate": "proven", "Evidence": "active"}},
+		{"saved spec", "c", b("succeeded"),
+			map[string]any{"artifacts": []any{art(true, "")},
+				"canonical_spec": map[string]any{"version": 1.0}},
+			map[string]string{"Spec": "proven", "Validate": "proven"}},
+		{"decided", "c", b("succeeded"),
+			map[string]any{"artifacts": []any{art(true, "approved")},
+				"canonical_spec": map[string]any{"version": 1.0}},
+			map[string]string{"Evidence": "proven", "Spec": "proven"}},
 	}
 	for _, tc := range cases {
-		pills := buildSpine(tc.conv, tc.builds)
+		pills := buildSpine(tc.conv, tc.builds, tc.status)
 		if len(pills) != 7 {
 			t.Fatalf("%s: pills = %d, want 7", tc.name, len(pills))
 		}
@@ -577,7 +601,11 @@ func TestBuildSpine(t *testing.T) {
 		if got["Run"] == "proven" {
 			t.Errorf("%s: Run proven from builder state", tc.name)
 		}
-		if got["Spec"] != "idle" || got["Validate"] != "idle" || got["Connect"] != "idle" || got["Deploy"] != "idle" || got["Evidence"] != "idle" {
+		// Spec/Validate/Evidence derive from artifact status (D5).
+		// Connect reads the live connector tool only on its own
+		// scene, so the spine keeps it gray rather than claim state
+		// it did not load; Deploy lands in Phase E.
+		if got["Connect"] != "idle" || got["Deploy"] != "idle" {
 			t.Errorf("%s: future phase not gray", tc.name)
 		}
 	}

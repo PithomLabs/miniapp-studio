@@ -17,6 +17,116 @@
 </div>
 <div class="devd">build {{$b.build_id}} · turn {{with $b.turn}}{{.id}}{{end}} · conv {{$b.conversation_id}}</div>
 </div>
+{{with $.Packet}}
+<div class="card"><h3>Execution packet <span class="tag mut">{{.packet_version}}</span></h3>
+<p class="sub">Hand this to the local agent ({{with .workspace}}{{.id}}{{end}} · {{.bridge.mode}} bridge). Objective and prior attempts below; full text in the Pulse and Evidence.</p>
+<div class="kv">
+<dt>Objective</dt><dd>{{if .objective}}{{.objective}}{{else}}—{{end}}</dd>
+<dt>Branch hint</dt><dd class="mono">{{if .branch_hint}}{{.branch_hint}}{{else}}operator's current branch{{end}}</dd>
+</div>
+{{with .prior_attempts}}
+{{if .}}
+<div class="scroll"><table><thead><tr><th>#</th><th>Verdict</th><th>Branch</th><th>Tests</th></tr></thead><tbody>
+{{range .}}<tr><td class="mono">{{.n}}</td><td>{{if eq .verdict "accept"}}<span class="tag ok">accept</span>{{else if eq .verdict "reject"}}<span class="tag bad">reject</span>{{else}}<span class="tag warn">{{.verdict}}</span>{{end}}</td><td class="mono">{{.git.branch}}</td><td>{{if .tests.passed}}<span class="tag ok">pass</span>{{else}}<span class="tag bad">fail</span>{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{end}}
+{{end}}
+<div class="devd">{{$.PacketJSON}}</div>
+</div>
+{{end}}
+{{if or (eq $b.status "assigned") (eq $b.status "running")}}
+<div class="card"><h3>Record attempt result</h3>
+<p class="sub">Returned from the manual bridge: where the work happened, what the tests said, the agent report, and your verdict on this attempt. Retrying this form replays the recorded attempt.</p>
+<form method="post" action="/console/attempt-result"><div class="fgrid">
+<input type="hidden" name="opkey" value="{{$.AttemptOpKey}}">
+<input type="hidden" name="conversation_id" value="{{$b.conversation_id}}">
+<input type="hidden" name="build_id" value="{{$b.build_id}}">
+<label>Branch<input type="text" name="branch" required maxlength="256"></label>
+<label>Status digest (e.g. sha of git status)<input type="text" name="status_digest" maxlength="256"></label>
+<label>Commits, one SHA per line (optional)<textarea name="commits" rows="2"></textarea></label>
+<label>Dirty-tree note (optional)<input type="text" name="dirty_note" maxlength="2000"></label>
+<div class="frow"><label><input type="checkbox" name="tests_passed" value="on"> Tests passed</label></div>
+<label>Test summary<input type="text" name="tests_summary" required maxlength="2000"></label>
+<label>Agent report<textarea name="report" rows="5" required></textarea></label>
+<div class="frow"><label>Verdict <select name="verdict"><option value="accept">accept</option><option value="rework">rework</option><option value="reject">reject</option></select></label>
+<label>Verdict note (optional)<input type="text" name="verdict_note" maxlength="2000"></label></div>
+<div class="actions"><button class="btn primary" type="submit">Record attempt</button></div>
+</div></form>
+</div>
+{{end}}
+{{with $.B1}}
+<div class="card"><h3>Checkpoints &amp; recovery</h3>
+<p class="sub">Manifests bind git-tracked state only — ignored files (.env and friends) are outside the manifest. Reconcile them explicitly when they matter.</p>
+{{if .checkpoints}}
+<div class="scroll"><table><thead><tr><th>Seq</th><th>Attempt</th><th>Branch</th><th>Head</th><th>Tree</th><th>Created</th></tr></thead><tbody>
+{{range .checkpoints}}<tr><td class="mono">#{{.seq}}</td><td class="mono">{{.n}}</td><td class="mono">{{.branch}}</td><td class="mono">{{.head}}</td><td>{{if .clean}}<span class="tag ok">clean</span>{{else}}<span class="tag warn">dirty</span>{{end}}</td><td class="mono">{{.created_at}}</td></tr>{{end}}
+</tbody></table></div>
+{{else}}
+<p class="sub">No checkpoints. Start an attempt, then capture one before risky work.</p>
+{{end}}
+{{if and (eq $.FocusBuild.status "assigned") (eq .open_n 0)}}
+<form method="post" action="/console/attempt-start" style="display:inline">
+<input type="hidden" name="opkey" value="{{$.StartOpKey}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="build_id" value="{{$.FocusBuild.build_id}}">
+<button class="btn" type="submit">Start attempt</button>
+</form>
+{{end}}
+{{if and (or (eq $.FocusBuild.status "assigned") (eq $.FocusBuild.status "running")) (gt .open_n 0)}}
+<form method="post" action="/console/checkpoint-capture" style="display:inline">
+<input type="hidden" name="opkey" value="{{$.CaptureOpKey}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="build_id" value="{{$.FocusBuild.build_id}}">
+<input name="note" placeholder="Checkpoint note (optional)" maxlength="2000" style="width:220px">
+<button class="btn" type="submit">Capture checkpoint</button>
+</form>
+<form method="post" action="/console/attempt-interrupt" style="display:inline">
+<input type="hidden" name="opkey" value="{{$.InterruptOpKey}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="build_id" value="{{$.FocusBuild.build_id}}">
+<button class="btn danger" type="submit">Mark interrupted</button>
+</form>
+{{end}}
+{{if and (or (eq $.FocusBuild.status "assigned") (eq $.FocusBuild.status "running")) .latest}}
+{{with .latest}}
+<form method="post" action="/console/attempt-resume" style="display:inline">
+<input type="hidden" name="opkey" value="{{$.ResumeOpKey}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="build_id" value="{{$.FocusBuild.build_id}}">
+<input type="hidden" name="checkpoint_id" value="{{.id}}">
+<label style="font-size:12.5px"><input type="checkbox" name="reconcile" value="on"> I reconciled differences</label>
+<input name="note" placeholder="Reconcile note (required if checked)" maxlength="2000" style="width:220px">
+<button class="btn primary" type="submit">Resume from #{{.seq}}</button>
+</form>
+{{end}}
+{{end}}
+<div class="devd">open attempt: {{.open_n}}</div>
+</div>
+<div class="card"><h3>Workspace</h3>
+{{with .live}}
+{{if .ok}}
+<div class="kv"><dt>Branch</dt><dd class="mono">{{.branch}}</dd><dt>HEAD</dt><dd class="mono">{{.head}}</dd><dt>Tree</dt><dd>{{if .dirty}}<span class="tag warn">dirty</span>{{else}}<span class="tag ok">clean</span>{{end}} <span class="sub">live</span></dd><dt>Workspace</dt><dd class="mono">{{$.B1.workspace_root}}</dd></div>
+<p class="sub">The workspace path is provenance, not identity: resume compares branch, HEAD, and manifest digest.</p>
+{{else}}
+<p class="sub">Live worktree state unavailable (workspace not configured).</p>
+{{end}}
+{{end}}
+{{if $.B1.files_ok}}
+<div class="scroll"><table><thead><tr><th>Path</th><th>Size</th></tr></thead><tbody>
+{{range $.B1.files}}<tr><td class="mono">{{.path}}{{if .dir}}/{{end}}</td><td class="mono">{{.size}}</td></tr>{{end}}
+</tbody></table></div>
+<p class="sub">Depth ≤ 3, .git excluded.{{if gt $.B1.files_skipped 0}} <span class="tag warn">{{$.B1.files_skipped}} entries unreadable</span>{{end}}</p>
+{{else}}
+<p class="sub">File listing unavailable (workspace not configured).</p>
+{{end}}
+{{with $.Packet.prior_attempts}}
+{{if .}}
+<h3>Test outputs</h3>
+{{range .}}<div class="checkrow"><span class="c">#{{.n}}</span><div>{{if .tests.passed}}<span class="tag ok">pass</span>{{else}}<span class="tag bad">fail</span>{{end}} {{.tests.summary}}</div></div>{{end}}
+{{end}}
+{{end}}
+</div>
+{{end}}
 {{$qs := $b.open_questions}}
 {{if $qs}}
 <div class="card"><h3>Open questions ({{len $qs}})</h3>

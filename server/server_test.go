@@ -78,7 +78,9 @@ func bootServerOn(t *testing.T, dsn string, sprites fly.SpriteManager, conns fly
 		}
 		if _, err := owner.Exec(ctx, `TRUNCATE studio.conversations, studio.messages, studio.builds,
 		studio.turns, studio.questions, studio.commands, studio.events,
-		studio.conversation_stream, studio.artifacts, studio.approvals`); err != nil {
+		studio.conversation_stream, studio.artifacts, studio.approvals,
+		studio.artifact_blobs, studio.artifact_verifications, studio.artifact_test_runs,
+		studio.checkpoints`); err != nil {
 			t.Fatalf("truncate conversations: %v", err)
 		}
 		// Framework invocation records carry idempotency outcomes (including

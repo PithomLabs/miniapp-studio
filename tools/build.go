@@ -3,12 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/PithomLabs/miniapp/registry"
+
+	"github.com/PithomLabs/miniapp-studio/store"
 )
 
 // Build lifecycle states (gateway plan §6). Transitions run through
@@ -191,43 +194,16 @@ func transitionTurn(ctx context.Context, tx pgx.Tx, tenantID, turnID, to string)
 	return nil
 }
 
-// AppendStream adds one cursor row for a message, event, or dispatch
-// outcome, allocating the
-// per-conversation sequence transactionally with the source insert. The
-// advisory lock serializes allocators per conversation; the sequence is
-// monotonic (aborted transactions can leave gaps, which cursor replay
-// tolerates — it needs "greater than", never contiguity).
-//
-// Lock order (deadlock fix): the conversation row is locked BEFORE the
-// advisory lock, in here, for every caller. The stream INSERT's foreign
-// key takes a KeyShare on the parent conversation row implicitly —
-// without this, a build-first ingester holding the advisory lock
-// deadlocks against a conversation-first sender holding the row lock
-// (proven by TestSSEConcurrentTrafficNoGapsNoDupes going red). FOR KEY
-// SHARE is FK-compatible and never blocks fellow appenders; it only waits
-// on conversation FOR UPDATE holders (message sends), whose post-lock
-// phase never waits, so the wait graph stays acyclic.
-func AppendStream(ctx context.Context, tx pgx.Tx, tenantID, convID, kind, refID, buildID string) (int64, error) {
-	var one int
-	err := tx.QueryRow(ctx,
-		`SELECT 1 FROM studio.conversations WHERE id = $1 AND tenant_id = $2 FOR KEY SHARE`,
-		convID, tenantID).Scan(&one)
+// appendStream is store.AppendStream with Miniapp error mapping
+// preserved: no rows means not found, everything else is a database
+// failure. Tool handlers must keep this mapping (raw pg errors can
+// echo values into invocation records).
+func appendStream(ctx context.Context, tx pgx.Tx, tenantID, convID, kind, refID, buildID string) (int64, error) {
+	seq, err := store.AppendStream(ctx, tx, tenantID, convID, kind, refID, buildID)
 	if err != nil {
-		return 0, notFoundOrDbErr(err)
-	}
-	// Two-key lock: tenant and conversation hash independently, so no
-	// separator games (NUL bytes are illegal in Postgres text).
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, tenantID, convID); err != nil {
-		return 0, dbErr(err, "")
-	}
-	var seq int64
-	err = tx.QueryRow(ctx,
-		`INSERT INTO studio.conversation_stream (tenant_id, conversation_id, seq, kind, ref_id, build_id)
-		 SELECT $1, $2, COALESCE(MAX(seq), 0) + 1, $3, $4, $5
-		 FROM studio.conversation_stream WHERE tenant_id = $1 AND conversation_id = $2
-		 RETURNING seq`,
-		tenantID, convID, kind, refID, buildID).Scan(&seq)
-	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, errNotFound()
+		}
 		return 0, dbErr(err, "")
 	}
 	return seq, nil
@@ -244,7 +220,7 @@ func appendMessage(ctx context.Context, tx pgx.Tx, tenantID, convID, role, body 
 		 VALUES ($1, $2, $3, $4, $5)`, id, tenantID, convID, role, body); err != nil {
 		return "", 0, dbErr(err, "")
 	}
-	seq, err := AppendStream(ctx, tx, tenantID, convID, "message", id, "")
+	seq, err := appendStream(ctx, tx, tenantID, convID, "message", id, "")
 	if err != nil {
 		return "", 0, err
 	}

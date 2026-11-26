@@ -1,0 +1,22 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Connect</h1>
+<p class="sub">Org connections the builder may use. Scoped authorization only: every connection carries an explicit endpoint policy.</p>
+{{if .Connectors}}
+{{$c := .Connectors}}
+{{if eq $c.status "unconfigured"}}
+<div class="card"><h3>Connector manager unconfigured</h3><p class="sub">No live connection source is wired in this environment, so no connections are claimed. Builds proceed without connector access until the owner configures one.</p></div>
+{{else}}
+{{if $c.connections}}
+<div class="scroll"><table><thead><tr><th>ID</th><th>Provider</th><th>Type</th><th>Policy</th></tr></thead><tbody>
+{{range $c.connections}}<tr><td class="mono">{{.id}}</td><td>{{.provider}}</td><td>{{.type}}</td><td style="font-size:12.5px">{{if .policy.allow_all}}allow-all{{else}}allow {{len .policy.allowed}} · block {{len .policy.blocked}}{{end}}{{if .policy.prefix}} · prefix {{.policy.prefix}}{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{else}}
+<div class="card"><h3>No connections</h3><p class="sub">The manager is live but reports no org connections for this tenant.</p></div>
+{{end}}
+{{end}}
+{{else}}
+<div class="card"><h3>Unavailable</h3><p class="sub">Connector state could not be loaded; nothing is shown rather than guessing.</p></div>
+{{end}}
+</div>
+{{end}}

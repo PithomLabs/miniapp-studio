@@ -61,7 +61,7 @@ func setupToolsDeps(t *testing.T, deps Deps) harness {
 	for _, stmt := range []string{
 		`TRUNCATE app.invocations, app.audit_events`,
 		`TRUNCATE studio.sessions, studio.operators, studio.apps, studio.app_specs, studio.deployments, studio.runs`,
-		`TRUNCATE studio.conversations, studio.messages, studio.builds, studio.turns, studio.questions, studio.commands, studio.events, studio.conversation_stream, studio.artifacts, studio.approvals`,
+		`TRUNCATE studio.conversations, studio.messages, studio.builds, studio.turns, studio.questions, studio.commands, studio.events, studio.conversation_stream, studio.artifacts, studio.approvals, studio.artifact_blobs, studio.artifact_verifications, studio.artifact_test_runs, studio.checkpoints`,
 	} {
 		if _, err := owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("truncate: %v", err)
@@ -168,7 +168,25 @@ var allTools = []string{
 	ToolDeployRetire, ToolConnectorsList, ToolConnectorsAttest, ToolActivityList,
 	ToolConversationCreate, ToolConversationGet, ToolConversationList, ToolConversationStream,
 	ToolMessageSend, ToolBuildCreate, ToolBuildProvision, ToolBuildUpgrade, ToolBuildStatus, ToolBuildCancel,
-	ToolBuildIngestEvent, ToolQuestionAnswer,
+	ToolBuildPacket, ToolBuildIngestEvent, ToolQuestionAnswer, ToolArtifactVerify, ToolArtifactStatus,
+}
+
+// TestArtifactDecideNotRegistered pins N17: artifact approval is a
+// human-only control-plane operation (server/artifact_decide.go). It
+// must never appear in the agent-callable tool surface, and invoking
+// the name must fail closed as an unknown tool.
+func TestArtifactDecideNotRegistered(t *testing.T) {
+	impl := NewImplementation(Deps{})
+	for name := range impl.ClassATools {
+		if name == "artifact.decide" {
+			t.Fatal("artifact.decide is registered: human-only boundary violated")
+		}
+	}
+	h := setupFakes(t)
+	if err := invokeErr(t, h, "artifact.decide",
+		mustJSON(t, map[string]any{"artifact_id": "a-x"}), "n17-k", toolCredA); err == nil {
+		t.Error("artifact.decide invocation accepted, want unknown-tool refusal")
+	}
 }
 
 // TestAllHandlersRequireTenant proves every handler refuses an empty tenant

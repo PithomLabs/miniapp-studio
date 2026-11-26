@@ -173,6 +173,19 @@ func ValidateSpec(spec *MiniappSpec) []Error {
 	return errs
 }
 
+// ScanSecretsJSON applies the secret-field scan to a raw JSON document
+// (specs, envelopes, manifests). Exported for artifact admission so
+// the rule list stays single-sourced; behavior matches Validate's.
+func ScanSecretsJSON(raw []byte) []Error {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return []Error{{Code: ESchema, Path: "$", Message: "invalid JSON: " + err.Error()}}
+	}
+	v := &validator{}
+	v.scanSecrets("$", decoded)
+	return v.errs
+}
+
 // scanSecrets rejects secret-bearing field names anywhere in the raw document.
 func (v *validator) scanSecrets(path string, node any) {
 	switch n := node.(type) {

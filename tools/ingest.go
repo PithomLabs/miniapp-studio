@@ -9,6 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/PithomLabs/miniapp/registry"
+
+	"github.com/PithomLabs/miniapp-studio/artifact"
+	"github.com/PithomLabs/miniapp-studio/gateway"
 )
 
 // Gateway event types (protocol §8, refined vocabulary).
@@ -103,7 +106,7 @@ func (d Deps) buildIngestEvent(ctx context.Context, call registry.ToolCall) (jso
 		}
 		return nil, dbErr(err, "")
 	}
-	seq, err := AppendStream(ctx, call.Tx, tenant, b.ConversationID, "event", in.EventID, in.BuildID)
+	seq, err := appendStream(ctx, call.Tx, tenant, b.ConversationID, "event", in.EventID, in.BuildID)
 	if err != nil {
 		return nil, err
 	}
@@ -394,16 +397,88 @@ func persistArtifacts(ctx context.Context, call registry.ToolCall, tenantID, bui
 		if err != nil {
 			return skipped
 		}
-		if _, err := call.Tx.Exec(ctx,
+		tag, err := call.Tx.Exec(ctx,
 			`INSERT INTO studio.artifacts (id, tenant_id, build_id, kind, digest, size_bytes, manifest)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)
 			 ON CONFLICT (tenant_id, build_id, digest) DO NOTHING`,
-			id, tenantID, buildID, kind, digest, size, json.RawMessage(manifest)); err != nil {
+			id, tenantID, buildID, kind, digest, size, json.RawMessage(manifest))
+		if err != nil {
 			skipped++
 			continue
 		}
+		rowID := id
+		if tag.RowsAffected() == 0 {
+			// Duplicate claim: resolve the surviving row id so
+			// fetch rows still reference the artifact. A repeat
+			// claim re-drives fetch (the first attempt may have
+			// failed terminally); blob writes stay idempotent.
+			if err := call.Tx.QueryRow(ctx,
+				`SELECT id FROM studio.artifacts
+				 WHERE tenant_id = $1 AND build_id = $2 AND digest = $3`,
+				tenantID, buildID, digest).Scan(&rowID); err != nil {
+				skipped++
+				continue
+			}
+		}
+		if kind == "bundle" {
+			skipped += logBundleFetchRows(ctx, call, tenantID, buildID, rowID, m)
+		}
 	}
 	return skipped
+}
+
+// maxFetchRowsPerBundle bounds claim expansion: a bundle naming more
+// members refuses fetch as a unit (the claim row persists as
+// evidence). Ingest policy, not contract — the contract sets no
+// member count.
+const maxFetchRowsPerBundle = 512
+
+// logBundleFetchRows enqueues one fetch_artifact command row per
+// member file of a bundle claim. Coherent-or-nothing: any malformed
+// member, bound violation, or logging failure skips the whole
+// bundle's fetch (a partial member set can never verify, so
+// fetching siblings wastes transfers). Returns 1 when skipped, 0
+// when all rows logged.
+func logBundleFetchRows(ctx context.Context, call registry.ToolCall, tenantID, buildID, artifactID string, claim map[string]any) int {
+	rawFiles, ok := claim["files"].([]any)
+	if !ok || len(rawFiles) == 0 || len(rawFiles) > maxFetchRowsPerBundle {
+		return 1
+	}
+	type member struct {
+		path   string
+		digest string
+		size   float64
+	}
+	members := make([]member, 0, len(rawFiles))
+	var total int64
+	for _, raw := range rawFiles {
+		fm, ok := raw.(map[string]any)
+		if !ok {
+			return 1
+		}
+		path, _ := fm["path"].(string)
+		digest, _ := fm["digest"].(string)
+		size, _ := fm["size"].(float64)
+		if path == "" || digest == "" || size < 0 {
+			return 1
+		}
+		if err := artifact.ValidatePath(path); err != nil {
+			return 1
+		}
+		total += int64(size)
+		members = append(members, member{path: path, digest: digest, size: size})
+	}
+	if total > artifact.MaxTotalBytes {
+		return 1
+	}
+	for _, mb := range members {
+		if err := logCommand(ctx, call.Tx, tenantID, buildID, gateway.CmdFetchArtifact, map[string]any{
+			"artifact_id": artifactID, "path": mb.path, "digest": mb.digest, "size": mb.size,
+		}); err != nil {
+			return 1
+		}
+	}
+	return 0
 }
 
 func validArtifactKind(kind string) bool {

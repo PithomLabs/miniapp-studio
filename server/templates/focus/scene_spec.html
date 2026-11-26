@@ -1,0 +1,21 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Spec</h1>
+<p class="sub">The canonical MiniappSpec for the focused application: the saved version the review pipeline binds to, not chat text.</p>
+{{if .CanonicalSpec}}
+{{$s := .CanonicalSpec}}
+<div class="card">
+<h3>App <span class="mono">{{$s.app_id}}</span> — version {{$s.version}}</h3>
+<div class="kv">
+<dt>Spec hash</dt><dd class="mono">{{$s.hash}}</dd>
+<dt>Binding</dt><dd>Approval saves or cites this exact version; the decision row carries the digest.</dd>
+</div>
+</div>
+<div class="card"><h3>Document</h3>
+<div class="scroll"><pre class="mono" style="font-size:12px;white-space:pre-wrap">{{$s.document_json}}</pre></div>
+</div>
+{{else}}
+<div class="card"><h3>No saved spec</h3><p class="sub">Nothing verified yet for this conversation: the canonical version appears here once an artifact verifies and the operator decides.</p></div>
+{{end}}
+</div>
+{{end}}

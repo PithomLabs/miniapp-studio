@@ -48,6 +48,45 @@ func shapeDispatchPayload(item map[string]any) map[string]any {
 	}
 }
 
+// shapeArtifactPayload reduces one joined artifact row to the stable
+// subset the Pulse renders: kind, digest prefix, and the outcome the
+// stream row announces. Join misses say unknown, never blank.
+func shapeArtifactPayload(item map[string]any) map[string]any {
+	kind, _ := item["kind"].(string)
+	digest, _ := item["artifact_digest"].(string)
+	short := digest
+	if len(short) > 15 {
+		short = short[:15] + "…"
+	}
+	outcome := "recorded"
+	switch kind {
+	case "artifact_fetched":
+		outcome = "fetched"
+	case "artifact_verified":
+		if passed, _ := item["artifact_verified_pass"].(bool); passed {
+			outcome = "verified"
+		} else {
+			outcome = "verification failed"
+		}
+	case "artifact_tested":
+		if status, _ := item["artifact_test_status"].(string); status != "" {
+			outcome = "tests " + status
+		}
+	case "artifact_decided":
+		if decision, _ := item["artifact_decision"].(string); decision != "" {
+			outcome = decision
+		}
+		if by, _ := item["artifact_decided_by"].(string); by != "" {
+			outcome += " by " + by
+		}
+	}
+	text := kind + " " + short
+	if digest == "" {
+		text = kind + " (artifact row gone)"
+	}
+	return map[string]any{"text": text, "outcome": outcome, "digest": short}
+}
+
 type conversationRow struct {
 	ID            string
 	TenantID      string
@@ -283,7 +322,11 @@ func (d Deps) conversationStream(ctx context.Context, call registry.ToolCall) (j
 			m.role, m.body,
 			e.type, e.payload,
 			c.kind AS cmd_kind, c.state AS cmd_state,
-			c.attempts AS cmd_attempts, c.last_error AS cmd_error
+			c.attempts AS cmd_attempts, c.last_error AS cmd_error,
+			ar.digest AS artifact_digest,
+			v.passed AS artifact_verified_pass,
+			tr.status AS artifact_test_status,
+			ap.decision AS artifact_decision, ap.decided_by AS artifact_decided_by
 		 FROM studio.conversation_stream AS s
 		 LEFT JOIN studio.messages AS m
 		   ON m.tenant_id = s.tenant_id AND m.id = s.ref_id AND s.kind = 'message'
@@ -292,6 +335,19 @@ func (d Deps) conversationStream(ctx context.Context, call registry.ToolCall) (j
 		   AND e.event_id = s.ref_id AND s.kind = 'event'
 		 LEFT JOIN studio.commands AS c
 		   ON c.tenant_id = s.tenant_id AND c.id = s.ref_id AND s.kind = 'dispatch'
+		 LEFT JOIN studio.artifacts AS ar
+		   ON ar.tenant_id = s.tenant_id AND ar.id = s.ref_id AND s.kind LIKE 'artifact\_%' ESCAPE '\'
+		 LEFT JOIN LATERAL (
+		   SELECT passed FROM studio.artifact_verifications
+		   WHERE tenant_id = s.tenant_id AND artifact_id = s.ref_id AND s.kind LIKE 'artifact\_%' ESCAPE '\'
+		   ORDER BY created_at DESC LIMIT 1) AS v ON true
+		 LEFT JOIN LATERAL (
+		   SELECT status FROM studio.artifact_test_runs
+		   WHERE tenant_id = s.tenant_id AND artifact_id = s.ref_id AND s.kind LIKE 'artifact\_%' ESCAPE '\'
+		   ORDER BY created_at DESC LIMIT 1) AS tr ON true
+		 LEFT JOIN studio.approvals AS ap
+		   ON ap.tenant_id = s.tenant_id AND ap.artifact_id = s.ref_id
+		   AND s.kind LIKE 'artifact\_%' ESCAPE '\'
 		 WHERE s.tenant_id = $1 AND s.conversation_id = $2 AND s.seq > $3
 		 ORDER BY s.seq ASC LIMIT $4`,
 		tenant, in.ConversationID, in.AfterSeq, limit)
@@ -314,6 +370,9 @@ func (d Deps) conversationStream(ctx context.Context, call registry.ToolCall) (j
 		}
 		if item["kind"] == "dispatch" {
 			item["payload"] = shapeDispatchPayload(item)
+		}
+		if kind, _ := item["kind"].(string); strings.HasPrefix(kind, "artifact_") {
+			item["payload"] = shapeArtifactPayload(item)
 		}
 	}
 	var latest int64 = in.AfterSeq

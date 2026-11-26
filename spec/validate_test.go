@@ -146,3 +146,16 @@ func TestSecretScanCaseInsensitive(t *testing.T) {
 		t.Errorf("Password field not flagged, got %v", errs)
 	}
 }
+
+func TestScanSecretsJSONWrapper(t *testing.T) {
+	if errs := ScanSecretsJSON([]byte(`{"a":1}`)); len(errs) != 0 {
+		t.Errorf("clean doc: %v", errs)
+	}
+	errs := ScanSecretsJSON([]byte(`{"password":"x"}`))
+	if len(errs) != 1 || errs[0].Code != ESecret {
+		t.Errorf("secret doc: %v", errs)
+	}
+	if errs := ScanSecretsJSON([]byte(`{oops`)); len(errs) != 1 || errs[0].Code != ESchema {
+		t.Errorf("malformed doc: %v", errs)
+	}
+}

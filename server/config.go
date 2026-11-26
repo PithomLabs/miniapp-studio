@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -39,6 +40,10 @@ type Config struct {
 	// SenderEnabled starts the Studio-to-Gateway dispatch loop. Optional:
 	// empty/false means command rows accumulate without dispatching.
 	SenderEnabled bool
+	// WorkspaceRoot is the local checkout B1 checkpoints inspect.
+	// Optional: empty means Git-backed features report unavailable
+	// instead of guessing a directory.
+	WorkspaceRoot string
 }
 
 var rxHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -113,6 +118,16 @@ func Load() (Config, error) {
 	if cfg.SpritesTokenFile != "" {
 		if _, err := os.Stat(cfg.SpritesTokenFile); err != nil {
 			fail("STUDIO_SPRITES_TOKEN_FILE unreadable: %v", err)
+		}
+	}
+	cfg.WorkspaceRoot = strings.TrimSpace(os.Getenv("STUDIO_WORKSPACE_ROOT"))
+	if cfg.WorkspaceRoot != "" {
+		if !filepath.IsAbs(cfg.WorkspaceRoot) {
+			fail("STUDIO_WORKSPACE_ROOT must be an absolute path")
+		} else if fi, err := os.Stat(cfg.WorkspaceRoot); err != nil {
+			fail("STUDIO_WORKSPACE_ROOT unreadable: %v", err)
+		} else if !fi.IsDir() {
+			fail("STUDIO_WORKSPACE_ROOT is not a directory")
 		}
 	}
 

@@ -1,0 +1,60 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Validate</h1>
+<p class="sub">Every artifact this conversation produced, with verification checks, test evidence, and the human decision. Approval requires a verified bundle plus a passing run on those exact bytes.</p>
+{{if .ValidateArts}}
+{{range .ValidateArts}}
+<div class="card">
+<h3><span class="mono">{{.short}}</span> {{if .verified}}<span class="tag ok">verified</span>{{else}}<span class="tag mut">unverified</span>{{end}} {{if .decision}}{{if eq .decision "approved"}}<span class="tag ok">approved</span>{{else}}<span class="tag bad">rejected</span>{{end}}{{end}} {{if .latest_run_status}}<span class="tag {{if eq .latest_run_status "passed"}}ok{{else if eq .latest_run_status "blocked"}}warn{{else}}bad{{end}}">tests {{.latest_run_status}}</span>{{end}}</h3>
+<div class="kv">
+<dt>Digest</dt><dd class="mono">{{.digest}}</dd>
+<dt>Kind</dt><dd>{{.kind}} · build <span class="mono">{{.build_id}}</span></dd>
+<dt>Checks</dt><dd>{{.passed_verifications}} passed verification round(s)</dd>
+{{if .decision}}<dt>Decision</dt><dd>{{.decision}} by {{.decided_by}} · {{.decided_at}}</dd>{{end}}
+</div>
+{{with .checks}}
+<div class="scroll"><table><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>
+{{range .}}<tr><td class="mono">{{.check}}</td><td>{{if .pass}}<span class="tag ok">pass</span>{{else}}<span class="tag bad">fail</span>{{end}}</td><td style="font-size:12.5px">{{if .message}}{{.message}}{{else if .path}}{{.path}}{{else if .code}}{{.code}}{{else}}—{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{end}}
+{{with .report}}
+<div class="devd">run: {{if .pass}}pass{{else}}fail{{end}} · {{.passed}}/{{.total}} tests{{if .truncated}} · output truncated{{end}}{{with .conformance}} · conformance {{if .pass}}pass{{else}}fail (missing {{len .missing}}){{end}}{{end}}</div>
+{{if .failures}}
+<div class="scroll"><table><thead><tr><th>Test</th><th>Output</th></tr></thead><tbody>
+{{range .failures}}<tr><td class="mono">{{.test}}</td><td style="font-size:12px"><pre class="mono" style="white-space:pre-wrap;margin:0">{{.output}}</pre></td></tr>{{end}}
+</tbody></table></div>
+{{end}}
+{{end}}
+{{if and (not .decision) .verified}}
+<div class="actions">
+<form method="post" action="/console/artifact-test" style="display:inline">
+<input type="hidden" name="opkey" value="{{.test_opkey}}">
+<input type="hidden" name="artifact_id" value="{{.id}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<button class="btn" type="submit">Run tests</button>
+</form>
+<form method="post" action="/console/artifact-decide" style="display:inline">
+<input type="hidden" name="opkey" value="{{.approve_opkey}}">
+<input type="hidden" name="artifact_id" value="{{.id}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="decision" value="approved">
+<button class="btn primary" type="submit">Approve</button>
+</form>
+<form method="post" action="/console/artifact-decide" style="display:inline">
+<input type="hidden" name="opkey" value="{{.reject_opkey}}">
+<input type="hidden" name="artifact_id" value="{{.id}}">
+<input type="hidden" name="conversation_id" value="{{$.Conversation.id}}">
+<input type="hidden" name="decision" value="rejected">
+<input name="note" placeholder="Rework note (required reading for the next build)" maxlength="2000" style="width:260px">
+<button class="btn danger" type="submit">Reject</button>
+</form>
+</div>
+{{end}}
+<div class="devd">{{.id}} · {{.created_at}}</div>
+</div>
+{{end}}
+{{else}}
+<div class="card"><h3>No artifacts</h3><p class="sub">The builder has not produced anything reviewable in this conversation yet.</p></div>
+{{end}}
+</div>
+{{end}}

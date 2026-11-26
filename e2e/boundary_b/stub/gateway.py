@@ -6,12 +6,18 @@ client does not verify response signatures).
 
 Usage: gateway.py <port> <call-log-path>
 """
+import base64
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LOG = sys.argv[2] if len(sys.argv) > 2 else "/tmp/boundary-b/stub_calls.jsonl"
 turns = {}  # build_id -> last accepted turn
+# Phase D rehearsal only: when set, fetch_artifact serves member files
+# from this directory (path traversal refused). Boundary B runs leave
+# it unset and fetch stays an unknown command, as before.
+FIXTURE_DIR = os.environ.get("PHASE_D_FIXTURE_DIR", "")
 
 
 class H(BaseHTTPRequestHandler):
@@ -63,6 +69,8 @@ class H(BaseHTTPRequestHandler):
             else:
                 out = {"error": "unknown build"}
                 code = 404
+        elif name == "fetch_artifact":
+            out, code = serve_fetch(payload)
         else:
             out = {"error": "unknown command"}
             code = 400
@@ -72,6 +80,30 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def serve_fetch(payload):
+    """Serve one claimed member file as data_b64. Single-file only,
+    mirroring the D0 transport freeze; anything else is a 400."""
+    if not FIXTURE_DIR:
+        return {"error": "unknown command"}, 400
+    try:
+        entries = payload["manifest"]["entries"]
+    except (KeyError, TypeError):
+        return {"error": "bad manifest"}, 400
+    if not isinstance(entries, list) or len(entries) != 1:
+        return {"error": "want exactly one entry"}, 400
+    rel = entries[0].get("path", "")
+    full = os.path.realpath(os.path.join(FIXTURE_DIR, rel))
+    if not full.startswith(os.path.realpath(FIXTURE_DIR) + os.sep):
+        return {"error": "path refused"}, 400
+    try:
+        with open(full, "rb") as f:
+            data = f.read()
+    except OSError:
+        return {"error": "unknown path"}, 404
+    return {"artifacts": [{"path": rel,
+                           "data_b64": base64.b64encode(data).decode()}]}, 200
 
 
 if __name__ == "__main__":

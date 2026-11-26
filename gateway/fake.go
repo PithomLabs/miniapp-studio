@@ -110,6 +110,9 @@ type FakeAdapter struct {
 	RunEvents [][]AgentEvent
 	// Sessions, when set, receives the record Start would create.
 	Sessions *SessionManager
+	// CollectFunc, when set, scripts Collect results per manifest.
+	// Nil keeps the canned sha256:fake behavior.
+	CollectFunc func(sessionRef string, manifest Manifest) ([]Artifact, error)
 }
 
 // ContinueCall records one Continue with its session.
@@ -235,6 +238,9 @@ func (f *FakeAdapter) Collect(_ context.Context, sessionRef string, manifest Man
 		return nil, err
 	}
 	f.Collects = append(f.Collects, CollectCall{Ref: sessionRef, Manifest: manifest})
+	if f.CollectFunc != nil {
+		return f.CollectFunc(sessionRef, manifest)
+	}
 	var out []Artifact
 	for _, e := range manifest.Entries {
 		out = append(out, Artifact{Path: e.Path, Kind: e.Kind,

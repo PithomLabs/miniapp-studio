@@ -1,7 +1,41 @@
 {{define "scene"}}
 <div class="scene">
 <h1 class="title">Evidence</h1>
-<p class="sub">Receipts below are live audit records. The gate ledger (G0–G12) lands in Phase D — nothing here claims gate status. Per-second stream polls are hidden as transport noise; the audit trail itself is complete.</p>
+<p class="sub">Receipts below are live audit records. The artifact ledger above names every bundle with its verification, test, and decision state. Per-second stream polls are hidden as transport noise; the audit trail itself is complete.</p>
+{{if .Artifacts}}
+<div class="card"><h3>Artifact ledger ({{len .Artifacts}})</h3>
+<div class="scroll"><table>
+<thead><tr><th>Digest</th><th>Verified</th><th>Tests</th><th>Decision</th></tr></thead>
+<tbody>
+{{range .Artifacts}}<tr><td class="mono">{{.digest}}</td><td>{{if .verified}}<span class="tag ok">verified</span>{{else}}<span class="tag mut">no</span>{{end}}</td><td>{{if .latest_run_status}}<span class="tag {{if eq .latest_run_status "passed"}}ok{{else if eq .latest_run_status "blocked"}}warn{{else}}bad{{end}}">{{.latest_run_status}}</span>{{else}}<span class="tag mut">none</span>{{end}}</td><td>{{if .decision}}{{if eq .decision "approved"}}<span class="tag ok">approved</span>{{else}}<span class="tag bad">rejected</span>{{end}} by {{.decided_by}}{{else}}<span class="tag mut">open</span>{{end}}</td></tr>{{end}}
+</tbody>
+</table></div>
+</div>
+{{end}}
+{{with .Packet.prior_attempts}}
+{{if .}}
+<div class="card"><h3>Attempts ({{len .}})</h3>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Verdict</th><th>Branch</th><th>Tests</th><th>Resumed from</th></tr></thead>
+<tbody>
+{{range .}}<tr><td class="mono">{{.n}}</td><td>{{if eq .verdict "accept"}}<span class="tag ok">accept</span>{{else if eq .verdict "reject"}}<span class="tag bad">reject</span>{{else}}<span class="tag warn">{{.verdict}}</span>{{end}}</td><td class="mono">{{.git.branch}}</td><td>{{if .tests.passed}}<span class="tag ok">pass</span>{{else}}<span class="tag bad">fail</span>{{end}} {{.tests.summary}}</td><td class="mono">{{if .source_checkpoint}}ckpt{{else}}—{{end}}</td></tr>{{end}}
+</tbody>
+</table></div>
+</div>
+{{end}}
+{{end}}
+{{with .B1.checkpoints}}
+{{if .}}
+<div class="card"><h3>Checkpoints ({{len .}})</h3>
+<div class="scroll"><table>
+<thead><tr><th>Seq</th><th>Attempt</th><th>Branch</th><th>Head</th><th>Created</th></tr></thead>
+<tbody>
+{{range .}}<tr><td class="mono">#{{.seq}}</td><td class="mono">{{.n}}</td><td class="mono">{{.branch}}</td><td class="mono">{{.head}}</td><td class="mono">{{.created_at}}</td></tr>{{end}}
+</tbody>
+</table></div>
+</div>
+{{end}}
+{{end}}
 {{if .Activity}}
 <div class="scroll"><table>
 <thead><tr><th>ID</th><th>At</th><th>Tool</th><th>Action</th><th>Outcome</th></tr></thead>

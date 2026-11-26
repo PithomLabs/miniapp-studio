@@ -282,12 +282,16 @@ func MustTestDB(t *testing.T, name string) {
 // studioTables mirrors the studio_app DML grant set from migrations
 // 000002 (apps, app_specs, deployments, runs), 000011 (conversations,
 // messages), 000012 (builds, turns, questions), 000013 (commands,
-// events), 000014 (conversation_stream, artifacts, approvals).
+// events), 000014 (conversation_stream, artifacts, approvals),
+// 000021 (artifact_blobs, artifact_verifications, artifact_test_runs),
+// 000024 (checkpoints).
 // Deliberately absent: sessions, operators (no table access by design).
 var studioTables = []string{
 	"apps", "app_specs", "deployments", "runs",
 	"conversations", "messages", "builds", "turns", "questions",
 	"commands", "events", "conversation_stream", "artifacts", "approvals",
+	"artifact_blobs", "artifact_verifications", "artifact_test_runs",
+	"checkpoints",
 }
 
 // frameworkTables mirrors the 000002 app.* DML grant set.

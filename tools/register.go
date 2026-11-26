@@ -71,10 +71,16 @@ var toolDefs = []toolDef{
 		`{"type":"object","properties":{"build_id":{"type":"string","maxLength":128}},"required":["build_id"],"additionalProperties":false}`},
 	{ToolBuildCancel, "Cancel one build, closing turns and withdrawing questions.", "build_id",
 		`{"type":"object","properties":{"build_id":{"type":"string","maxLength":128}},"required":["build_id"],"additionalProperties":false}`},
+	{ToolBuildPacket, "Assemble the versioned B0 execution packet for one build.", "build_id",
+		`{"type":"object","properties":{"build_id":{"type":"string","maxLength":128}},"required":["build_id"],"additionalProperties":false}`},
 	{ToolBuildIngestEvent, "Ingest one gateway event with state-guarded transitions.", "build_id",
 		`{"type":"object","properties":{"build_id":{"type":"string","maxLength":128},"event_id":{"type":"string","maxLength":128},"type":{"type":"string","maxLength":64},"seq":{"type":"integer"},"payload":{"type":"object"}},"required":["build_id","event_id","type","payload"],"additionalProperties":false}`},
 	{ToolQuestionAnswer, "Answer one open question and resume its build.", "question_id",
 		`{"type":"object","properties":{"question_id":{"type":"string","maxLength":128},"answer":{"type":"string","maxLength":65536}},"required":["question_id","answer"],"additionalProperties":false}`},
+	{ToolArtifactVerify, "Deterministically verify one bundle artifact without executing code.", "artifact_id",
+		`{"type":"object","properties":{"artifact_id":{"type":"string","maxLength":128}},"required":["artifact_id"],"additionalProperties":false}`},
+	{ToolArtifactStatus, "Read artifact review state for one conversation.", "conversation_id",
+		`{"type":"object","properties":{"conversation_id":{"type":"string","maxLength":128}},"required":["conversation_id"],"additionalProperties":false}`},
 }
 
 var outputSchema = json.RawMessage(`{"type":"object"}`)
@@ -156,8 +162,11 @@ func NewImplementation(deps Deps) *registry.Implementation {
 		ToolBuildUpgrade:       deps.buildUpgrade,
 		ToolBuildStatus:        deps.buildStatus,
 		ToolBuildCancel:        deps.buildCancel,
+		ToolBuildPacket:        deps.buildPacket,
 		ToolBuildIngestEvent:   deps.buildIngestEvent,
 		ToolQuestionAnswer:     deps.questionAnswer,
+		ToolArtifactVerify:     deps.artifactVerify,
+		ToolArtifactStatus:     deps.artifactStatus,
 	}}
 }
 

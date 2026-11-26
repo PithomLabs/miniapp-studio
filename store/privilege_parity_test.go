@@ -50,7 +50,9 @@ func TestPrivilegeParity(t *testing.T) {
 	}
 	studioTables := []string{"apps", "app_specs", "deployments", "runs",
 		"conversations", "messages", "builds", "turns", "questions",
-		"commands", "events", "conversation_stream", "artifacts", "approvals"}
+		"commands", "events", "conversation_stream", "artifacts", "approvals",
+		"artifact_blobs", "artifact_verifications", "artifact_test_runs",
+		"checkpoints"}
 	for _, table := range studioTables {
 		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
 			check("table", "studio."+table, priv, true)

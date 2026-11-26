@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PithomLabs/miniapp/registry"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/PithomLabs/miniapp-studio/apps"
 	"github.com/PithomLabs/miniapp-studio/spec"
@@ -313,33 +314,61 @@ func (d Deps) specSave(_ context.Context, call registry.ToolCall) (json.RawMessa
 	if parsed.App.Owner != tenant {
 		return nil, fmt.Errorf("studio: spec owner does not match calling tenant")
 	}
-	hash, err := spec.ContentHash(parsed)
+	version, hash, err := SaveSpecVersion(call.Context, call.Tx, tenant, in.AppID, in.Spec)
 	if err != nil {
-		return nil, fmt.Errorf("studio: hash: %w", err)
+		return nil, err
+	}
+	return marshalMap(map[string]any{"version": version, "hash": hash})
+}
+
+// SaveSpecVersion persists one validated spec document as the next
+// version for its app and returns (version, hash). Shared by the
+// spec.save tool and artifact approval (single-canonical-spec rule:
+// approval cites the version it saves, atomically, in one tx).
+func SaveSpecVersion(ctx context.Context, tx pgx.Tx, tenant, appID string, doc json.RawMessage) (int, string, error) {
+	hash, err := spec.ContentHashOf(doc)
+	if err != nil {
+		return 0, "", fmt.Errorf("studio: hash: %w", err)
 	}
 	// Serialize versions per app: lock the parent row, then max+1. The
 	// unique constraint remains the backstop against races.
-	if _, err := call.Tx.Exec(call.Context,
+	if _, err := tx.Exec(ctx,
 		`SELECT id FROM studio.apps WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
-		in.AppID, tenant); err != nil {
-		return nil, dbErr(err, "")
+		appID, tenant); err != nil {
+		return 0, "", dbErr(err, "")
 	}
-	version, _, err := currentVersion(call.Context, call.Tx, tenant, in.AppID)
+	version, _, err := currentVersion(ctx, tx, tenant, appID)
 	if err != nil {
-		return nil, dbErr(err, "")
+		return 0, "", dbErr(err, "")
 	}
 	version++
 	id, err := randomID()
 	if err != nil {
-		return nil, err
+		return 0, "", err
 	}
-	if _, err := call.Tx.Exec(call.Context,
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO studio.app_specs (id, tenant_id, app_id, version, spec_hash, document)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, tenant, in.AppID, version, hash, in.Spec); err != nil {
-		return nil, dbErr(err, "version conflict, retry")
+		id, tenant, appID, version, hash, doc); err != nil {
+		return 0, "", dbErr(err, "version conflict, retry")
 	}
-	return marshalMap(map[string]any{"version": version, "hash": hash})
+	return version, hash, nil
+}
+
+// FindSpecVersion locates a saved spec version by app and content
+// hash. Approval cites the hit instead of saving a duplicate.
+func FindSpecVersion(ctx context.Context, tx pgx.Tx, tenant, appID, hash string) (int, bool, error) {
+	var version int
+	err := tx.QueryRow(ctx,
+		`SELECT version FROM studio.app_specs WHERE tenant_id = $1 AND app_id = $2 AND spec_hash = $3`,
+		tenant, appID, hash).Scan(&version)
+	if err == pgx.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, dbErr(err, "")
+	}
+	return version, true, nil
 }
 
 type specGetIn struct {

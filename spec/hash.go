@@ -31,6 +31,20 @@ func CanonicalJSON(raw []byte) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
+// ContentHashOf hashes a raw spec document identically to ContentHash:
+// strict decode first (unknown fields fail closed), then the same
+// canonicalization. Callers pass validated documents; the strict
+// decode only fires on corruption.
+func ContentHashOf(raw []byte) (string, error) {
+	var parsed MiniappSpec
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&parsed); err != nil {
+		return "", err
+	}
+	return ContentHash(&parsed)
+}
+
 // ContentHash returns the hex SHA-256 of the spec's canonical JSON, excluding
 // metadata.contentHash itself. The hash is computed over the decoded spec, so
 // input formatting never affects it. Editing a spec must produce a new hash;

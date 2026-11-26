@@ -21,6 +21,13 @@ import (
 // terminally (malformed, unauthorized, unknown, or illegal-state —
 // retrying cannot help); network errors, 429, and 5xx retry with
 // exponential backoff, which also covers wake-on-command latency.
+//
+// maxFetchResponseBytes caps fetch_artifact response bodies: one file
+// (≤ MaxArtifactBytes → base64 ×4/3) plus envelope headroom. All other
+// commands stay under maxCommandBytes. TestFetchCapCoversMaxFile pins
+// the derivation so the two caps cannot drift apart.
+const maxFetchResponseBytes = 8 << 20
+
 type Client struct {
 	HTTP     *http.Client
 	Timeout  time.Duration
@@ -98,6 +105,12 @@ func (c *Client) SendWithID(ctx context.Context, gatewayURL string, key []byte, 
 	if retries < 0 {
 		retries = 0
 	}
+	maxResp := int64(maxCommandBytes)
+	if name == CmdFetchArtifact {
+		// Fetch responses carry file bytes (base64); every other
+		// command carries control-plane JSON under the 1 MB cap.
+		maxResp = maxFetchResponseBytes
+	}
 	var last error
 	for attempt := 0; attempt <= retries; attempt++ {
 		if attempt > 0 {
@@ -105,7 +118,7 @@ func (c *Client) SendWithID(ctx context.Context, gatewayURL string, key []byte, 
 				return nil, err
 			}
 		}
-		out, retry, err := c.once(ctx, url, raw)
+		out, retry, err := c.once(ctx, url, raw, maxResp)
 		if err == nil {
 			return out, nil
 		}
@@ -117,7 +130,7 @@ func (c *Client) SendWithID(ctx context.Context, gatewayURL string, key []byte, 
 	return nil, last
 }
 
-func (c *Client) once(ctx context.Context, url string, raw []byte) (map[string]any, bool, error) {
+func (c *Client) once(ctx context.Context, url string, raw []byte, maxResp int64) (map[string]any, bool, error) {
 	client := c.HTTP
 	if client == nil {
 		client = http.DefaultClient
@@ -141,7 +154,7 @@ func (c *Client) once(ctx context.Context, url string, raw []byte) (map[string]a
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCommandBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResp))
 	if err != nil {
 		return nil, true, fmt.Errorf("gateway: command read: %w", err)
 	}

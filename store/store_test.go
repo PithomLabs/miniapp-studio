@@ -276,7 +276,8 @@ func TestRoleAttributes(t *testing.T) {
 		true, "test cannot execute operator_upsert")
 	for _, table := range []string{"operators", "sessions", "apps", "app_specs", "deployments", "runs",
 		"conversations", "messages", "builds", "turns", "questions",
-		"commands", "events", "conversation_stream", "artifacts", "approvals"} {
+		"commands", "events", "conversation_stream", "artifacts", "approvals",
+		"artifact_blobs", "artifact_verifications", "artifact_test_runs"} {
 		check(`SELECT relforcerowsecurity FROM pg_class WHERE relnamespace = 'studio'::regnamespace AND relname = '`+table+`'`,
 			true, "FORCE RLS on "+table)
 		check(`SELECT relrowsecurity FROM pg_class WHERE relnamespace = 'studio'::regnamespace AND relname = '`+table+`'`,

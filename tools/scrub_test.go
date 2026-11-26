@@ -91,3 +91,17 @@ func TestScrubValueKeys(t *testing.T) {
 		t.Errorf("nested scrub = %v", got)
 	}
 }
+
+func TestContainsSecretSpanMatchesScrub(t *testing.T) {
+	hit := "key sk-live-abcdefghij1234567890 end"
+	if !ContainsSecretSpan(hit) {
+		t.Error("credential span not detected")
+	}
+	if scrubSpans(hit) == hit {
+		t.Error("scrub left the span intact")
+	}
+	miss := "ordinary prose with no credentials"
+	if ContainsSecretSpan(miss) {
+		t.Error("false positive on ordinary prose")
+	}
+}

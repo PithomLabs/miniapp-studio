@@ -139,6 +139,33 @@ func TestLoadGatewayOrgSecret(t *testing.T) {
 	}
 }
 
+func TestLoadWorkspaceRoot(t *testing.T) {
+	validEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkspaceRoot != "" {
+		t.Errorf("default root = %q, want empty (unconfigured)", cfg.WorkspaceRoot)
+	}
+	t.Setenv("STUDIO_WORKSPACE_ROOT", t.TempDir())
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkspaceRoot == "" {
+		t.Errorf("root not picked up")
+	}
+	t.Setenv("STUDIO_WORKSPACE_ROOT", "relative/path")
+	if _, err := Load(); err == nil {
+		t.Error("relative root accepted, want refusal")
+	}
+	t.Setenv("STUDIO_WORKSPACE_ROOT", filepath.Join(t.TempDir(), "missing"))
+	if _, err := Load(); err == nil {
+		t.Error("missing root accepted, want refusal")
+	}
+}
+
 func TestLoadDSNScheme(t *testing.T) {
 	validEnv(t)
 	t.Setenv("STUDIO_DATABASE_URL", "mysql://u:p@localhost/db")

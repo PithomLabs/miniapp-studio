@@ -303,6 +303,9 @@ type sendPlan struct {
 	turn int
 	// promptSrc records where an assign prompt came from for evidence.
 	promptSrc string
+	// fetch is the claim expectation for fetch_artifact rows: the ack
+	// parser verifies the response against exactly this.
+	fetch *fetchedFile
 }
 
 // claimAndPlan claims the oldest due row and resolves its wire payload in
@@ -421,6 +424,25 @@ func (snd *Sender) claimAndPlan(ctx context.Context, b senderBinding) (*sendPlan
 			p.wire = wire
 		case gateway.CmdCancel:
 			p.wire = map[string]any{}
+		case gateway.CmdFetchArtifact:
+			wire, want, ferr := fetchWire(p.payload)
+			if ferr != nil {
+				inline = terminalSettle(fmt.Sprintf("fetch row malformed: %v", ferr))
+				inlined = true
+				return snd.settleTx(ctx, tx, b.tenant, p, inline)
+			}
+			var artifactExists bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM studio.artifacts WHERE tenant_id = $1 AND id = $2)`,
+				b.tenant, want.artifactID).Scan(&artifactExists); err != nil {
+				return fmt.Errorf("sender: fetch artifact check: %w", err)
+			}
+			if !artifactExists {
+				inline = terminalSettle("fetch artifact row vanished; not dispatched")
+				inlined = true
+				return snd.settleTx(ctx, tx, b.tenant, p, inline)
+			}
+			p.wire, p.fetch = wire, want
 		default:
 			inline = terminalSettle(fmt.Sprintf("sender does not drive kind %q", kind))
 			inlined = true
@@ -554,7 +576,12 @@ type settle struct {
 	// adopted); every other status move belongs to the tools/ingest.
 	flipRunning bool
 	newRow      *newRowSpec
-	detail      string
+	// fetched carries verified member bytes for fetch_artifact acks.
+	// settleTx persists them to the blob store in the same
+	// transaction that acks the row: bytes and ack commit
+	// atomically. Leaf table, no lock-order interaction.
+	fetched *fetchedFile
+	detail  string
 }
 
 // newRowSpec is one recovery row enqueued in the settlement transaction.
@@ -635,6 +662,16 @@ func (snd *Sender) ackPlan(plan *sendPlan, out map[string]any) settle {
 	case gateway.CmdCancel:
 		st := settle{state: "acked", burn: true, detail: "cancel accepted"}
 		return st
+	case gateway.CmdFetchArtifact:
+		if plan.fetch == nil {
+			return terminalSettle("fetch plan lacks its claim expectation")
+		}
+		got, err := parseFetchOut(out, plan.fetch)
+		if err != nil {
+			return terminalSettle(fmt.Sprintf("fetch rejected: %v", err))
+		}
+		return settle{state: "acked", burn: true, fetched: got,
+			detail: fmt.Sprintf("fetched %s (%d bytes, digest verified)", got.path, got.size)}
 	default:
 		return terminalSettle(fmt.Sprintf("acked unexpected kind %q", plan.kind))
 	}
@@ -714,6 +751,12 @@ func (snd *Sender) classify(ctx context.Context, plan *sendPlan, cerr *gateway.C
 	// Accepted but unreadable: the command executed (2xx), so adopt the
 	// reconciled turn rather than failing a launch that happened.
 	if cerr.Status >= 200 && cerr.Status < 300 {
+		// Fetch is turnless: an unreadable fetch response retries
+		// under the same id (gateway dedups; blob writes are
+		// idempotent) instead of adopting a turn it never had.
+		if plan.kind == gateway.CmdFetchArtifact {
+			return burnSettle("fetch response undecodable; retrying")
+		}
 		rec, found, retry := snd.reconcileOrBurn(ctx, plan)
 		if retry != nil {
 			return *retry
@@ -819,6 +862,12 @@ func (snd *Sender) classifyConflict(ctx context.Context, plan *sendPlan, code, g
 // is gone and its prompt must be consciously re-sent, never silently
 // replayed into a turn the agent never saw).
 func (snd *Sender) classifyPoison(ctx context.Context, plan *sendPlan) settle {
+	// Fetch is an idempotent read (Collect re-reads files; blob
+	// writes dedup by digest), so ambiguity retries under the same
+	// id — never supersedes with turn semantics it never had.
+	if plan.kind == gateway.CmdFetchArtifact {
+		return burnSettle("fetch ambiguous; retrying (idempotent read)")
+	}
 	if recoveredFrom(plan.payload) {
 		return terminalSettle("gateway ambiguous twice for this content; operator triage")
 	}
@@ -938,6 +987,14 @@ func (snd *Sender) settleTx(ctx context.Context, tx pgx.Tx, tenant string, plan 
 	if cmd.RowsAffected() != 1 {
 		return fmt.Errorf("sender: row %s lost mid-flight", plan.rowID)
 	}
+	if st.fetched != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO studio.artifact_blobs (tenant_id, digest, bytes, size_bytes)
+			 VALUES ($1, $2, $3, $4) ON CONFLICT (tenant_id, digest) DO NOTHING`,
+			tenant, st.fetched.digest, st.fetched.data, st.fetched.size); err != nil {
+			return fmt.Errorf("sender: store fetched bytes: %w", err)
+		}
+	}
 	// Burned retries exhaust the budget terminally.
 	final := st.state
 	if st.burn && st.state == "queued" && plan.attempts+1 >= snd.cfg.MaxAttempts {
@@ -992,8 +1049,18 @@ func (snd *Sender) settleTx(ctx context.Context, tx pgx.Tx, tenant string, plan 
 	// advisory, matching ingest. Appending before the flip
 	// deadlocks against ingest's build-first order (proven red).
 	if (final == "acked" || final == "failed") && plan.conv != "" {
-		if _, err := tools.AppendStream(ctx, tx, tenant, plan.conv, "dispatch", plan.rowID, plan.buildID); err != nil {
+		if _, err := store.AppendStream(ctx, tx, tenant, plan.conv, "dispatch", plan.rowID, plan.buildID); err != nil {
 			return fmt.Errorf("sender: stream dispatch outcome: %w", err)
+		}
+	}
+	// Bundle completion rides the same position (after all build
+	// updates): when this ack stored the last missing member, the
+	// bundle flips claimed→fetched with its own receipt. Single
+	// sender worker: no two acks interleave, so the check-then-
+	// append cannot double-stream.
+	if final == "acked" && st.fetched != nil && plan.conv != "" {
+		if err := maybeAppendFetched(ctx, tx, tenant, plan.conv, st.fetched); err != nil {
+			return fmt.Errorf("sender: stream fetch completion: %w", err)
 		}
 	}
 	return nil

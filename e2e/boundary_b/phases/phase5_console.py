@@ -30,14 +30,21 @@ async def _amain(ctx):
     await c.call("Runtime.enable")
     await login(c, base, ctx["tokens"]["t-demo"])
 
-    for scene, phase in [("spec", "Phase D"), ("validate", "Phase D"),
-                         ("connect", "Phase D"), ("deploy", "Phase E")]:
+    # D5 ships Spec/Validate/Connect: with no artifacts claimed in this
+    # run, each renders its honest empty state. Only Deploy still waits.
+    for scene, empty in [("spec", "No saved spec"),
+                         ("validate", "No artifacts"),
+                         ("connect", "Connector manager unconfigured")]:
         await c.nav(f"{base}/console?scene={scene}&conversation={conv}")
-        await c.wait_js("document.body.innerText.includes('Not built yet')")
-        assert await c.js(f"document.body.innerText.includes('{phase}')"), scene
+        await c.wait_js(f"document.body.innerText.includes('{empty}')")
         n = await c.js("document.querySelectorAll('.sph[data-s=\"proven\"]').length")
         assert n == 1, f"{scene}: proven pills = {n} (Describe only)"
-    print("PASS spec/validate/connect/deploy honest placeholders; spine stays truthful")
+    print("PASS spec/validate/connect shipped empty states; spine stays truthful")
+
+    await c.nav(f"{base}/console?scene=deploy&conversation={conv}")
+    await c.wait_js("document.body.innerText.includes('Not built yet')")
+    assert await c.js("document.body.innerText.includes('Phase E')"), "deploy"
+    print("PASS deploy honestly waits on Phase E")
 
     await c.nav(f"{base}/console?scene=settings&conversation={conv}")
     await c.wait_js("document.body.innerText.includes('only this tenant')")

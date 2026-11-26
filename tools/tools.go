@@ -65,8 +65,11 @@ const (
 	ToolBuildUpgrade       = "build.upgrade"
 	ToolBuildStatus        = "build.status"
 	ToolBuildCancel        = "build.cancel"
+	ToolBuildPacket        = "build.packet"
 	ToolBuildIngestEvent   = "build.ingest_event"
 	ToolQuestionAnswer     = "question.answer"
+	ToolArtifactVerify     = "artifact.verify"
+	ToolArtifactStatus     = "artifact.status"
 )
 
 // decode parses tool input strictly: unknown fields and trailing data are

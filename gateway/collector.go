@@ -8,13 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PithomLabs/miniapp-studio/artifact"
 )
 
-// Artifact size caps (gateway plan §14). An oversize collect fails the
-// turn honestly instead of filling Studio storage or memory.
+// Artifact size caps, single-sourced from the frozen Phase D contract.
+// An oversize collect fails the turn honestly instead of filling
+// Studio storage or memory.
 const (
-	MaxArtifactBytes = 5 << 20
-	MaxCollectBytes  = 50 << 20
+	MaxArtifactBytes = artifact.MaxFileBytes
+	MaxCollectBytes  = artifact.MaxTotalBytes
 )
 
 // Collect gathers manifest entries from a working dir, hashing every byte.

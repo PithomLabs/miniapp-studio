@@ -35,8 +35,11 @@ func tableExists(t *testing.T, dsn, table string) bool {
 // The Phase A down files must reverse cleanly: down to v10 removes exactly
 // the four new table groups while older tables survive, and migrating back
 // up restores v14 clean.
-// phaseATables are the ten tables migrations 000011-000014 created. Every
-// future migration adding a table must extend this list (Phase B contract).
+// phaseATables are the ten tables migrations 000011-000014 created. Do NOT
+// extend this list for later migrations: it stages version-pinned
+// assertions (v10/v15/v16) where newer tables cannot exist. Tables
+// from 000015 onward get catalog coverage from the live table lists
+// in store_test.go (RLS flags) and privilege_parity_test.go.
 var phaseATables = []string{"conversations", "messages", "builds", "turns",
 	"questions", "commands", "events", "conversation_stream", "artifacts", "approvals"}
 
