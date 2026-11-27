@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -69,6 +73,66 @@ func TestPoolResetsTenantSetting(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("post-helper checkout saw %d rows, want 0", n)
+	}
+}
+
+// TestTenantResetHookTimesOut proves the prompt30 fix directly: against a
+// peer that completes the handshake and then never answers, the hook must
+// return false at its deadline instead of parking forever. Unit-only (an
+// in-memory pgwire peer); no database needed.
+func TestTenantResetHookTimesOut(t *testing.T) {
+	old := tenantResetTimeout
+	tenantResetTimeout = 200 * time.Millisecond
+	defer func() { tenantResetTimeout = old }()
+
+	server, client := net.Pipe()
+	defer server.Close()
+	go func() {
+		defer server.Close()
+		var ln [4]byte
+		if _, err := io.ReadFull(server, ln[:]); err != nil {
+			return
+		}
+		rest := make([]byte, binary.BigEndian.Uint32(ln[:])-4)
+		if _, err := io.ReadFull(server, rest); err != nil {
+			return
+		}
+		msg := func(typ byte, payload []byte) {
+			buf := []byte{typ, 0, 0, 0, 0}
+			binary.BigEndian.PutUint32(buf[1:], uint32(len(payload)+4))
+			_, _ = server.Write(append(buf, payload...))
+		}
+		u32 := func(v uint32) []byte {
+			b := make([]byte, 4)
+			binary.BigEndian.PutUint32(b, v)
+			return b
+		}
+		msg('R', u32(0)) // AuthOk
+		msg('S', append(append([]byte("server_version"), 0), append([]byte("18.0"), 0)...))
+		msg('K', append(u32(4242), u32(424242)...)) // cancel key, so client cancel works
+		_, _ = server.Write([]byte{'Z', 0, 0, 0, 5, 'I'})
+		_, _ = io.Copy(io.Discard, server) // blackhole: read, never reply
+	}()
+
+	cfg, err := pgx.ParseConfig("postgres://u:x@invalid/db?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DialFunc = func(context.Context, string, string) (net.Conn, error) { return client, nil }
+	// pgconn resolves before dialing; short-circuit with a dummy address
+	// (DialFunc ignores it and returns the pipe).
+	cfg.LookupFunc = func(context.Context, string) ([]string, error) { return []string{"127.0.0.1:5432"}, nil }
+	conn, err := pgx.ConnectConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	start := time.Now()
+	if ok := TenantResetHook()(conn); ok {
+		t.Error("hook returned true against a silent server")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("hook took %s, want bounded near deadline", elapsed)
 	}
 }
 

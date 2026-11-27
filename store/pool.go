@@ -15,8 +15,9 @@ import (
 // trivial and local; anything slower is a dead transport masquerading
 // as a live connection, and waiting on it once hung pool teardown and
 // acquisition across two live packages (prompt30 S7). Failure destroys
-// the connection — never waits, never reuses.
-const tenantResetTimeout = 10 * time.Second
+// the connection — never waits, never reuses. A var (not const) so
+// tests can shorten it; production must never reassign it.
+var tenantResetTimeout = 10 * time.Second
 
 // TenantResetHook returns a pgxpool AfterRelease hook that clears
 // transaction-external tenant state before a connection rejoins the idle
