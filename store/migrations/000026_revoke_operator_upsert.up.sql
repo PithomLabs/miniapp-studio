@@ -13,6 +13,16 @@
 -- varies per project), keeping the owner-side provisioner working.
 -- Forward migration (not a 000002 edit): 000002 has applied on live
 -- branches, so history is immutable from here on.
+--
+-- AMENDMENT (Card 001): run the ACL statements AS studio_lookup.
+-- Function-ACL writes by the migrator-as-member take no effect (and,
+-- once 000027 writes real entries, 42501 against them — proven live
+-- on the down-leg). This text runs on future fresh-DB applications
+-- (same end state: absent target warns either way) and on replay-UP
+-- legs (where the REVOKE must remove a real entry) — strictly safer
+-- in every direction. The runner verifies no checksums (dirty-flag
+-- only), so amending changes future runs, not recorded history.
+SET ROLE studio_lookup;
 REVOKE EXECUTE ON FUNCTION studio.operator_upsert(TEXT, TEXT, BOOLEAN) FROM studio_app;
 
 DO $$ BEGIN
@@ -20,3 +30,4 @@ DO $$ BEGIN
     EXECUTE format('GRANT EXECUTE ON FUNCTION studio.operator_upsert(TEXT, TEXT, BOOLEAN) TO %I', session_user);
   END IF;
 END $$;
+RESET ROLE;

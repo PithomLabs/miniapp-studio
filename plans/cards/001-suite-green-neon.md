@@ -156,3 +156,14 @@ itself is the green-after proof (post-000027, session_* test-side TRUE requires 
 down/up round-trip (v27→v15→v27). Follow-up card warranted (not blocking): per-file adapter atomicity
 (BEGIN/COMMIT) for the partial-application class — 000027's assertions already close the silent-ineffectiveness
 class this incident exposed.
+
+**Green-run attempt 1 (2026-11-27 ~23:48 +08:00): cycle down-leg RED.** Leg 1/3 (full up incl. 000027, with its
+self-assertions) PASSED on scratch — the repair works. Leg 2/3 (down to v15) failed in 000026-down:
+`permission denied for function operator_upsert (42501)`. Analysis: 000027 made the ACL entries real, so
+000026-down's member-posture GRANT now 42501s where it used to silent-no-op — the repair exposed the down's
+latent grantorship bug. Fixing only the down would then break the replay-UP (000026-up's REVOKE would hit a
+real entry as a mere member), so BOTH halves are amended with SET ROLE/RESET ROLE (explicit, documented
+exception to history-immutability: downs re-run and never applied live; 000026-up's amendment is provably
+safe-or-better on fresh-UP (absent target warns either way) and required on replay-UP; the runner verifies no
+checksums, dirty-flag only). Out of scope, recorded: 000002-down/000009-down share the latent shape but no
+suite leg crosses below v15. **Prediction for attempt 2: all seven PASS.**
