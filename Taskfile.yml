@@ -1,0 +1,7 @@
+# Root Taskfile: includes per-area taskfiles. Run `task --list` to see
+# every documented entry point. Tasks orchestrate the canonical
+# `studio dev` subcommands; they never reimplement application logic.
+version: "3"
+
+includes:
+  dev: ./Taskfile.dev.yml

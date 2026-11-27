@@ -26,3 +26,22 @@ secrets/
 .vscode/
 *.swp
 .DS_Store
+
+# Integration-test runner results (regenerated every run)
+test-results/
+
+# Host execution broker job queue (runtime state, never committed)
+/.agent-jobs/
+
+# Local parity capture (regenerated per run; the committed report lives in docs/)
+dev-parity.local.json
+
+# Live handoff binding (T1): branch identities written by `task dev:bind`.
+# Identities only, but stays untracked. The DSN lives outside the repo.
+/dev-neon.json
+/dev-diag-roles.json
+# Live run evidence (S7): bootstrap console output shows versions, dirty
+# states, counts, timings, and phase events. Redacted by construction
+# (DSNs never printed); still untracked by policy.
+/bootstrap-run*.log
+/test-run*.log

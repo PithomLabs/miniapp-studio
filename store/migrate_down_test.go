@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/PithomLabs/miniapp/testkit"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 func tableExists(t *testing.T, dsn, table string) bool {
@@ -67,18 +67,18 @@ func rlsFlags(t *testing.T, dsn, table string) (enabled, forced bool) {
 // hold on all ten tables.
 func TestRLSEnable000016(t *testing.T) {
 	dsn := scratchDB(t, "studio_rls_flags")
-	testkit.MigrateUp(t, dsn)
+	testdb.FrameworkBaseline(t, dsn)
 	ctx := context.Background()
 	owner, err := NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	if err := Migrate(ctx, dsn); err != nil {
+	if err := Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	v15 := uint(15)
-	if err := migrateTo(dsn, &v15); err != nil {
+	if err := migrateTo(ctx, dsn, testdb.Policy(t), &v15); err != nil {
 		t.Fatalf("down to v15: %v", err)
 	}
 	for _, table := range phaseATables {
@@ -87,7 +87,7 @@ func TestRLSEnable000016(t *testing.T) {
 			t.Errorf("v15 %s: enabled=%v forced=%v, want the shipped inert state (false/true)", table, enabled, forced)
 		}
 	}
-	if err := Migrate(ctx, dsn); err != nil {
+	if err := Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("up to v16: %v", err)
 	}
 	for _, table := range phaseATables {
@@ -100,14 +100,14 @@ func TestRLSEnable000016(t *testing.T) {
 
 func TestMigrateDownRoundTrip(t *testing.T) {
 	dsn := scratchDB(t, "studio_migrate_down")
-	testkit.MigrateUp(t, dsn)
+	testdb.FrameworkBaseline(t, dsn)
 	ctx := context.Background()
 	owner, err := NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer owner.Close()
-	if err := Migrate(ctx, dsn); err != nil {
+	if err := Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	latest, err := LatestVersion()
@@ -118,7 +118,7 @@ func TestMigrateDownRoundTrip(t *testing.T) {
 		t.Fatalf("LatestVersion = %d, want >= 14", latest)
 	}
 	v10 := uint(10)
-	if err := migrateTo(dsn, &v10); err != nil {
+	if err := migrateTo(ctx, dsn, testdb.Policy(t), &v10); err != nil {
 		t.Fatalf("down to v10: %v", err)
 	}
 	for _, gone := range []string{"conversations", "messages", "builds", "turns",
@@ -139,7 +139,7 @@ func TestMigrateDownRoundTrip(t *testing.T) {
 	if version != 10 || dirty {
 		t.Fatalf("after down: v%d dirty=%v, want v10 clean", version, dirty)
 	}
-	if err := Migrate(ctx, dsn); err != nil {
+	if err := Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("back up: %v", err)
 	}
 	version, dirty, err = CurrentVersion(ctx, owner)

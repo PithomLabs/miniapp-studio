@@ -24,7 +24,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: studio <serve|migrate|provision|gateway> [flags]")
+		return fmt.Errorf("usage: studio <serve|migrate|provision|gateway|dev> [flags]")
 	}
 	switch args[0] {
 	case "serve":
@@ -35,8 +35,10 @@ func run(args []string) error {
 		return runProvision(args[1:])
 	case "gateway":
 		return runGateway(args[1:])
+	case "dev":
+		return runDev(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want serve|migrate|provision|gateway)", args[0])
+		return fmt.Errorf("unknown command %q (want serve|migrate|provision|gateway|dev)", args[0])
 	}
 }
 

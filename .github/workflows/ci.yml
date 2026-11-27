@@ -1,5 +1,9 @@
 name: ci
 
+# T1 NOTICE (2026-11-27): this Actions workflow still provisions a digest-pinned
+# PostgreSQL service image, which violates R302 (Neon-only). It is owned by the
+# T2 track for replacement by Fly-native CI (ADR-007) — do not extend its
+# database provisioning. P0 skeleton gates below remain valid until replaced.
 # P0 skeleton gates: formatting, vet, build, tests. Postgres-backed suites
 # (framework pin gate, Studio integration tests) run in later phases once the
 # module consumes the pinned framework and test fixtures exist.

@@ -13,74 +13,37 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/PithomLabs/miniapp-studio/store"
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 )
 
-// The literal live-role name must track the production constant;
-// importing store here is safe (store never imports testdb).
-func TestLiveRoleNameMatches(t *testing.T) {
-	if liveRoleName() != store.AppRoleName {
-		t.Errorf("testdb live role %q drifts from store %q", liveRoleName(), store.AppRoleName)
-	}
-}
-
-func TestFixedPasswordHexRule(t *testing.T) {
-	if !rxHexPass.MatchString(TestRolePassword) {
-		t.Error("fixed test password violates the hex rule")
-	}
-	if TestRoleName == liveRoleName() {
-		t.Error("test role collides with the live role name")
-	}
-}
-
-func TestRunPatternGuard(t *testing.T) {
-	good := []string{
-		"studio_test_run_1234_1764000000_ab12cd34",
-		"studio_test_run_1_1_00",
-	}
-	for _, name := range good {
-		if !rxRunDB.MatchString(name) {
-			t.Errorf("%q rejected, want accept", name)
-		}
-	}
-	bad := []string{
-		"studio_boundary_b", "studio_boundary_b_b1", "postgres",
-		"studio_test_run_", "studio_test_run_x_y_z",
-		"studio_test_run_1_2_zz; DROP", "STUDIO_TEST_RUN_1_2_AB",
-		"studio_test_run_1_2_ab;--",
-	}
-	for _, name := range bad {
-		if rxRunDB.MatchString(name) {
-			t.Errorf("%q accepted, want refusal", name)
-		}
-	}
-}
+// Pure contract tests (endpoint allowlist, run pattern, fixed password,
+// live-role tracking) moved to dbenv with the code they cover.
 
 func TestAppDSNRefusesNonRun(t *testing.T) {
 	// AppDSN fatals on refusal, so a refusal here would kill the test.
 	// Instead assert the guard predicate directly on hostile inputs.
 	for _, db := range []string{"postgres", "studio_boundary_b", "app", "studio_test_run_x"} {
-		u, err := url.Parse("postgres://maint@127.0.0.1:5434/" + db)
+		u, err := url.Parse("postgres://maint@ep-test-0001.invalid:5432/" + db + "?sslmode=verify-full")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rxRunDB.MatchString(strings.TrimPrefix(u.Path, "/")) {
+		if dbenv.IsRunDB(strings.TrimPrefix(u.Path, "/")) {
 			t.Errorf("guard admits database %q", db)
 		}
 	}
 }
 
 func TestAppDSNShape(t *testing.T) {
-	dsn := "postgres://maint@127.0.0.1:5434/studio_test_run_9_9_abcdef01"
+	dsn := "postgres://maint@ep-test-0001.invalid:5432/studio_test_run_9_9_abcdef01?sslmode=verify-full"
 	got := AppDSN(t, dsn)
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.User.Username() != TestRoleName {
+	if parsed.User.Username() != dbenv.TestRoleName {
 		t.Error("app DSN user is not the test role")
 	}
-	if pw, ok := parsed.User.Password(); !ok || pw != TestRolePassword {
+	if pw, ok := parsed.User.Password(); !ok || pw != dbenv.TestRolePassword {
 		t.Error("app DSN credential is not the fixed test password")
 	}
 	if parsed.Path != "/studio_test_run_9_9_abcdef01" {
@@ -106,7 +69,7 @@ func TestGrantRefusesNonRunDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err := GrantTestPrivileges(ctx, pool); err == nil {
+	if err := dbenv.GrantTestPrivileges(ctx, pool); err == nil {
 		t.Error("grants on a non-run database accepted, want refusal")
 	} else if !strings.Contains(err.Error(), "non-run") {
 		t.Errorf("error = %v, want non-run refusal", err)
@@ -128,49 +91,6 @@ func TestRunDSNSingleton(t *testing.T) {
 	MustTestDB(t, strings.TrimPrefix(parsed.Path, "/"))
 }
 
-// TestEndpointAllowlist is pure: CheckTestEndpoint opens no connection,
-// so every refusal below proves the harness never dials the endpoint.
-func TestEndpointAllowlist(t *testing.T) {
-	good := []string{
-		"postgres://maint:pw@127.0.0.1:5434/postgres",
-		"postgres://maint:pw@localhost:5434/anything",
-		"postgresql://maint:pw@[::1]:5434/x",
-	}
-	for _, raw := range good {
-		if _, err := CheckTestEndpoint(raw); err != nil {
-			t.Errorf("accept %q: %v", redactURL(raw), err)
-		}
-	}
-	bad := []string{
-		"postgres://maint:pw@db.prod.example:5434/postgres",
-		"postgres://maint:pw@10.0.0.5:5434/postgres",
-		"postgres://maint:pw@127.0.0.1:5433/postgres",
-		"postgres://maint:pw@127.0.0.1:5432/postgres",
-		"postgres://maint:pw@127.0.0.1/postgres",
-		"postgres://maint:pw@localhost./postgres",
-		"postgres:///no-host-at-all",
-		"https://maint:pw@127.0.0.1:5434/postgres",
-		"://unparseable",
-	}
-	for _, raw := range bad {
-		if _, err := CheckTestEndpoint(raw); err == nil {
-			t.Errorf("refuse %q: accepted", redactURL(raw))
-		} else if !strings.Contains(err.Error(), "unapproved endpoint") {
-			t.Errorf("refuse %q: error %q lacks the refusal marker", redactURL(raw), err.Error())
-		}
-	}
-}
-
-func redactURL(raw string) string {
-	if u, err := url.Parse(raw); err == nil {
-		if _, ok := u.User.Password(); ok {
-			u.User = url.User(u.User.Username())
-			return u.String()
-		}
-	}
-	return "unparseable-url"
-}
-
 // TestRunDSNRejectsUnapprovedChild exists only as the subprocess target
 // for TestEndpointRejectionPrecedesDial: in a normal suite run it
 // provisions (or reuses) the run database and passes.
@@ -180,8 +100,9 @@ func TestRunDSNRejectsUnapprovedChild(t *testing.T) {
 
 // TestEndpointRejectionPrecedesDial proves end to end that a
 // mispointed TEST_DATABASE_URL is refused before any connection is
-// attempted: the child process gets an unresolvable host, so any dial
-// would fail with a DNS error instead of the allowlist refusal.
+// attempted: the child process gets a policy bound to one branch but
+// a URL aimed elsewhere at an unresolvable host, so any dial would
+// fail with a DNS error instead of the policy refusal.
 func TestEndpointRejectionPrecedesDial(t *testing.T) {
 	if os.Getenv("U512_ENDPOINT_CHILD") != "" {
 		t.Skip("child process")
@@ -197,14 +118,17 @@ func TestEndpointRejectionPrecedesDial(t *testing.T) {
 	cmd.Dir = filepath.Dir(thisFile)
 	env := os.Environ()
 	env = append(env, "U512_ENDPOINT_CHILD=1",
-		"TEST_DATABASE_URL=postgres://maint:pw@u512-unapproved.invalid:5434/postgres")
+		"NEON_PROJECT_ID=proj_test_123",
+		"NEON_BRANCH_ID=br_test_abc",
+		"NEON_ENDPOINT_HOSTS=ep-test-0001.invalid",
+		"TEST_DATABASE_URL=postgres://maint:pw@u512-unapproved.invalid:5432/postgres?sslmode=verify-full")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("child with unapproved endpoint succeeded:\n%s", out)
 	}
 	if !strings.Contains(string(out), "unapproved endpoint") {
-		t.Fatalf("child failed without the allowlist refusal:\n%s", out)
+		t.Fatalf("child failed without the policy refusal:\n%s", out)
 	}
 	if strings.Contains(string(out), "no such host") ||
 		strings.Contains(string(out), "connection refused") {

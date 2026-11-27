@@ -1,277 +1,66 @@
-I strongly recommend adding this to Miniapp Studio's architecture, but as a **roadmap-ready Agent Provider and Execution Adapter layer**, not as another feature bolted directly into the application builder.
+The solution is to **fix the coding agent's execution environment, not PostgreSQL or Docker.**
 
-This is an important extension because it separates two things that should never be coupled:
+Your evidence establishes that the host and the agent operate in different security and network boundaries. The agent cannot reach the host's loopback or Docker socket. Changing credentials, reinstalling PostgreSQL, changing file permissions, or rewriting `TEST_DATABASE_URL` will not solve that.
 
-- **Agent intelligence:** Gemini, Claude, Codex, OpenAI Agents SDK and other agent providers.
-- **Agent execution environment:** Fly Sprites, Fly Machines and other supported execution environments.
+## **My recommendation: give the agent controlled access to local PostgreSQL**
 
-Miniapp Studio should eventually let a customer choose the agent technology they prefer without changing how their generated applications are defined, governed, rendered or managed.
+Preserve the existing Docker PostgreSQL installation and sandbox isolation. Introduce a narrowly scoped network path.
 
-The official Fly documentation confirms that both Gemini Managed Agents and Claude Managed Agents can use Sprites as their execution environment.&#x20;
+**Recommended execution architecture**
 
-[image](https://www.google.com/s2/favicons?domain=https://fly.io\&sz=32)
+**Coding agent sandbox**
 
-Fly+2
+Agent shell and Go test processes
 
+Approved network path — specific destination and port
 
+**Controlled PostgreSQL bridge**
 
-## **1. The architecture I recommend**
+Host gateway or restricted TCP proxy
 
-Introduce a new architectural layer:
+**Existing Docker PostgreSQL 19**
 
-**Agent Provider Abstraction**
+`127.0.0.1:5434` on host
 
-**Miniapp Studio**
+The bridge should expose only PostgreSQL to the authorized agent environment. It should not expose the Docker daemon.
 
-Create applications, choose an agent provider, configure integrations, preview, deploy and manage.
+### **Three possible solutions, in order**
 
-**Agent Provider Abstraction**
+1. **Sandbox network configuration (preferred):** provide a route to a host-side PostgreSQL endpoint, allowlisted to the agent and database port. Preserve network isolation for everything else.
+2. **Dedicated integration-test container:** run a test runner attached to the existing Docker Compose network, with access to PostgreSQL but no Docker socket. Mount the working repository and let it execute the DB-backed test commands.
+3. **Host-side test execution:** temporarily have the owner execute database tests from the host terminal. Useful as an immediate workaround, but not an ideal permanent developer experience.
 
-**Gemini Managed Agents**
+### **What we must not do**
 
-Roadmap adapter
+- Do not grant the agent unrestricted Docker socket access. Docker daemon access is effectively highly privileged host access.
+- Do not use host networking as a blanket workaround without assessing its security implications.
+- Do not expose PostgreSQL on all host interfaces.
+- Do not use production credentials or data for local integration tests.
+- Do not count skipped database tests as passed tests.
 
-**Claude Managed Agents**
+## **Directive to the coding agent**
 
-Roadmap adapter
+# Engineering Directive: Restore Local Database Test Connectivity
 
-**OpenAI Agents**
+**Objective:** Establish a durable, secure and repeatable execution path through which the coding agent can run PostgreSQL-backed integration tests against the existing local PostgreSQL 19 Docker installation.
 
-Roadmap adapter
+**Governing principles:** First-principles investigation, local-first engineering, reality-first iteration, least privilege and root-cause remediation.
 
-**Other providers**
+1. Preserve the existing host PostgreSQL installation. Do not reinstall, recreate or replace it.
+2. Do not request unrestricted Docker socket access or weaken sandbox isolation as a shortcut.
+3. Investigate the coding-agent runtime's supported network and execution configuration. Identify the precise host-to-sandbox connectivity mechanism.
+4. Design the smallest secure solution that makes the existing PostgreSQL service reachable from the agent's execution environment.
+5. Restrict connectivity to the required database endpoint and port. Use dedicated least-privilege test credentials and an isolated test database.
+6. Do not modify application database architecture to accommodate a sandbox limitation.
+7. Implement the durable environment solution, documenting configuration, startup, shutdown, health checks and recovery.
+8. Verify actual connectivity from the agent shell using `pg_isready` and a real SQL query.
+9. Run migration 000025, the receipt-store tests, RLS/grant tests, privilege-parity tests and the complete serial test suite.
+10. Report exact commands, results, skipped tests and any remaining limitations. A zero exit code with skipped DB tests is not full verification.
 
-Extensible adapters
+**Acceptance criterion:** The coding agent can repeatedly execute database-backed tests from its normal authorized environment against the existing local PostgreSQL service, without requiring the owner to manually execute every test and without granting the agent unrestricted host or Docker access.
 
-**Execution Environment Abstraction**
+Stop and request an owner decision before making any security-boundary change whose scope exceeds this directive.
 
-Fly Sprites for isolated agent tools and sessions; Fly Machines for long-lived trusted services and production control planes.
+**My architectural decision:** establish this connectivity path once and make it part of the standard Miniapp Studio development environment. Every future coding agent should inherit the same tested local-first execution capability.
 
-**Miniapp Foundation**
-
-MiniappSpec, capability registry, authorization, connectors, UI renderer, application lifecycle, audit and eventually DBOS durable workflows.
-
-This architecture means a generated application does not have to know whether its AI agent is powered by Gemini or Claude.
-
-## **2. What the future Studio UI should provide**
-
-Add an **AI Agents** section alongside Connectors.
-
-[AI Catalog | Manage Models, MCP Servers, Tools & Agents | Gravitee](https://images.openai.com/static-rsc-4/I_awpsUHgSYDNAnDQURHdm8om4Z-5d531Qup2MeZKRfqSWBRTx022dKJwiRJRpb332jIlXJncS6Ens5vPGS4o6Zl9funcvhfe4MliR7MvULq4mVGRHAHceWhGxsEaGuw_HZtI5VompbZQeJIZq3uU7JXlZjD8Oodyenx27kZ7n8?purpose=inline)
-
-[gravitee.io](https://www.gravitee.io/platform/ai-catalog?utm_source=chatgpt.com)
-
-The eventual provider selection screen should show:
-
-| Provider              | Execution integration                | Studio status                        |
-| --------------------- | ------------------------------------ | ------------------------------------ |
-| Gemini Managed Agents | Google agent loop + Sprite worker    | Roadmap                              |
-| Claude Managed Agents | Anthropic agent loop + Sprite worker | Roadmap                              |
-| OpenAI Agents SDK     | Agent SDK + Sprite sandbox           | Roadmap                              |
-| Claude Code           | Coding agent + Sprite integration    | Existing Fly integration to evaluate |
-| Codex                 | Coding agent + Sprite integration    | Existing Fly integration to evaluate |
-| Custom agent          | User-provided adapter                | Future extension                     |
-
-The distinction between managed agents and coding-agent integrations is important. They are different integration types and should not be presented as interchangeable.
-
-The configuration screen should eventually allow users to select:
-
-- Agent provider and model.
-- Provider account and authorization.
-- Execution environment.
-- Session or agent configuration.
-- Available tools and connectors.
-- Permission boundaries.
-- Agent-specific usage and cost limits.
-
-Provider credentials and agent-specific secrets must be handled through appropriately scoped control-plane integrations, not embedded in generated Miniapp specifications or exposed to untrusted Sprite processes.
-
-## **3. Why this matters commercially**
-
-Imagine two companies creating the same invoice-management application.
-
-Company A prefers Gemini.
-
-Company B prefers Claude.
-
-Both should be able to generate the same Miniapp application definition, connect the same business systems and use the same governance policies.
-
-Only the agent provider configuration changes.
-
-That is an important form of platform independence.
-
-It also avoids making Miniapp Studio dependent on one LLM vendor's agent framework.
-
-## **4. Important implementation distinction**
-
-I inspected Google's Fly Machines integration documentation through its GitHub repository.
-
-It describes a self-hosted Gemini environment that can run inside either a Sprite or a raw Fly Machine. The integration uses a `gemini-api` worker, environment ID and environment key, a supervised service, and a task heartbeat to keep a Sprite active while the worker is running.&#x20;
-
-[image](https://www.google.com/s2/favicons?domain=https://fly.io\&sz=32)
-
-Fly.io Changelog
-
-
-
-This should be treated as a separate adapter from Gemini Managed Agents.
-
-I recommend three distinct provider integration categories:
-
-| Integration category           | Example                                      | Roadmap treatment                                        |
-| ------------------------------ | -------------------------------------------- | -------------------------------------------------------- |
-| Managed agent providers        | Gemini Managed Agents, Claude Managed Agents | Planned                                                  |
-| Self-hosted agent environments | Gemini API CLI on Sprites or Machines        | Planned                                                  |
-| Coding-agent integrations      | Claude Code, Codex, Cursor                   | Existing Fly ecosystem; evaluate and expose where useful |
-
-For Claude Managed Agents, the official reference implementation uses a Fly dispatcher and Sprite worker architecture.&#x20;
-
-[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
-
-GitHub+1
-
-
-
-## **5. Addition to the coding-agent prompt**
-
-Add the following section to the existing implementation-plan prompt.
-
-## Additional Roadmap Requirement: Pluggable Managed Agents and Agent Providers
-
-Miniapp Studio must be architecturally ready to support managed and self-hosted AI agent providers, including Gemini Managed Agents, Claude Managed Agents, and future providers.
-
-This is a POST-HACKATHON ROADMAP REQUIREMENT. Do not implement these integrations as part of the Hacksgiving MVP unless a minimal architectural seam is necessary to avoid costly redesign.
-
-### A. Product objective
-
-Non-technical users must eventually be able to select their preferred AI agent provider when creating or managing a generated Miniapp application.
-
-The application specification, UI, connectors, business capabilities, authorization policies and Miniapp execution contracts must not become coupled to one AI vendor.
-
-Changing the agent provider must not require rebuilding the generated application.
-
-### B. Required provider categories
-
-Distinguish the following integration types:
-
-1. Managed agent providers:
-   - Gemini Managed Agents using Fly Sprites.
-   - Claude Managed Agents using Fly Sprites.
-   - Future managed-agent providers.
-2. Self-hosted agent environments:
-   - Gemini API CLI self-hosted environment on Sprites.
-   - Gemini API CLI self-hosted environment on Fly Machines.
-   - Future self-hosted agent runtimes.
-3. Coding-agent and harness integrations:
-   - Claude Code.
-   - Codex.
-   - Cursor.
-   - Other Fly-supported coding agents and MCP clients.
-
-Do not conflate these categories. They have different agent loops, execution contracts, authentication requirements, lifecycle semantics and operational responsibilities.
-
-### C. Architecture requirements
-
-Design a provider-neutral Agent Provider abstraction with separately implemented adapters.
-
-The plan must define contracts for:
-
-- Provider discovery and registration.
-- Provider account and authorization references.
-- Agent and model selection.
-- Agent/session creation and termination.
-- Execution-environment selection.
-- Sprite or Machine provisioning.
-- Tool-call and worker lifecycle.
-- Session status and event handling.
-- Callbacks/webhooks where applicable.
-- Logs and usage reporting where supported.
-- Error classification and recovery.
-- Credential and secret isolation.
-- Provider capability discovery and compatibility validation.
-
-Keep the provider control plane separate from the generated Miniapp application runtime.
-
-The provider must not be able to bypass Miniapp authorization, capability restrictions, business-operation approvals or audit requirements.
-
-### D. Fly-native integration requirements
-
-Use official provider integration documentation, official SDKs and repositories as primary evidence.
-
-Evaluate:
-
-- Gemini Managed Agents on Sprites:\
-  [https://docs.fly.io/sprites/integrations/gemini-managed-agents](https://docs.fly.io/sprites/integrations/gemini-managed-agents)
-- Claude Managed Agents on Sprites:\
-  [https://docs.fly.io/sprites/integrations/claude-managed-agents](https://docs.fly.io/sprites/integrations/claude-managed-agents)
-- Gemini API CLI self-hosted Fly provider:\
-  [https://github.com/google-gemini/gemini-api-cli/tree/main/docs/self-hosted/providers/fly-machines](https://github.com/google-gemini/gemini-api-cli/tree/main/docs/self-hosted/providers/fly-machines)
-- Fly Sprites ecosystem:\
-  [https://fly.io/sprites/ecosystem/](https://fly.io/sprites/ecosystem/)
-
-Record the differences between managed providers, self-hosted environments, Sprites and raw Fly Machines.
-
-Do not assume that the Gemini Managed Agents integration and Gemini API CLI self-hosted integration are the same product or use the same credential and lifecycle model.
-
-### E. Future Studio UI
-
-Reserve an AI Agents section with:
-
-- Supported provider catalog.
-- Provider type and integration status.
-- Connect/disconnect account.
-- Model and agent configuration.
-- Execution target selection.
-- Session and agent management.
-- Usage and cost visibility.
-- Provider health and diagnostics.
-
-Clearly distinguish available, configured, authorized, deployed and operational states.
-
-### F. Security requirements
-
-Investigate provider-specific trust boundaries.
-
-Never expose provider API keys, environment keys, Fly API tokens or webhook secrets in generated MiniappSpecs, user-visible logs, untrusted Sprite processes or browser responses.
-
-Use least-privilege credentials, isolated execution environments, revocation and auditable lifecycle operations.
-
-The agent provider must remain an execution/intelligence dependency, not the authority over Miniapp business actions.
-
-### G. Implementation-plan deliverables
-
-Add a dedicated roadmap phase for managed and self-hosted agent integrations.
-
-Include:
-
-- Provider-neutral architecture and Go interfaces.
-- Provider-by-provider capability matrix.
-- Authentication and secret-management architecture.
-- Fly Sprite/Machine lifecycle adapters.
-- Gemini and Claude integration sequence.
-- Session persistence and recovery considerations.
-- Webhook and event-handling contracts.
-- Security threat model.
-- Contract tests and acceptance criteria.
-- Cost, resource and operational trade-offs.
-
-Separate architectural seams needed in the MVP from actual post-hackathon provider integrations.
-
-Do not claim Gemini Managed Agents, Claude Managed Agents or Gemini self-hosted integration is implemented merely because the Studio exposes a provider selector.
-
-The final deliverable remains an implementation plan only. Do not implement source code.
-
-## **6. My final architectural recommendation**
-
-I would now describe Miniapp Studio as having four independent dimensions:
-
-1. **Application definition:** What software does the user want?
-2. **Agent provider:** Which AI agent or managed service powers the intelligence?
-3. **Execution environment:** Where does the agent run—Sprite or Machine?
-4. **Business execution:** Which Miniapp capabilities, permissions, integrations and workflow operations can it invoke?
-
-This separation is fundamental to making Miniapp vendor-neutral and Fly-native at the same time.
-
-The hackathon MVP should establish the seams without implementing all the provider adapters.
-
-**The long-term vision: users choose what they want to build, which AI they prefer, and where it should run. Miniapp governs how the resulting business application operates.**
+We should not have to solve this problem again for every implementation milestone.

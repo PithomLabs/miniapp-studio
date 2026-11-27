@@ -61,6 +61,76 @@ func TestNoProdTestDBImport(t *testing.T) {
 	}
 }
 
+// TestAppRoleNameLiteral pins the production application-role name.
+// Twin of TestLiveRoleNameLiteral in dbenv (a direct cross-package
+// comparison would cycle the test binary now that store imports dbenv).
+func TestAppRoleNameLiteral(t *testing.T) {
+	if AppRoleName != "studio_app" {
+		t.Errorf("AppRoleName %q drifts from studio_app", AppRoleName)
+	}
+}
+
+// TestNoProdDbenvImport proves the shared environment contract stays
+// out of production request paths. Only the test harness itself, the
+// `studio dev` command (dev.go, bind.go), and tests may import dbenv:
+// it carries the fixed test credential and branch provisioning
+// primitives.
+func TestNoProdDbenvImport(t *testing.T) {
+	needle := "miniapp-studio/dbenv\""
+	root := repoRoot(t)
+	var offenders []string
+	walkGo(t, root, func(path string, isTest bool, body string) {
+		if isTest || !strings.Contains(body, needle) {
+			return
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(rel, "testdb"+string(filepath.Separator)) {
+			return
+		}
+		if rel == filepath.Join("cmd", "studio", "dev.go") {
+			return
+		}
+		// bind.go is the same `studio dev` command surface (owner-terminal
+		// branch binding); identical justification as dev.go.
+		if rel == filepath.Join("cmd", "studio", "bind.go") {
+			return
+		}
+		// store/migrate.go: endpoint policy + pinned pools only, enforced
+		// by TestMigrateDbenvSymbolRestriction below.
+		if rel == filepath.Join("store", "migrate.go") {
+			return
+		}
+		offenders = append(offenders, rel)
+	})
+	if len(offenders) > 0 {
+		t.Errorf("dbenv imported by production files:\n  - %s", strings.Join(offenders, "\n  - "))
+	}
+}
+
+// TestMigrateDbenvSymbolRestriction confines what the migrate runner
+// may touch inside dbenv: endpoint policy, policy loaders, and pinned
+// pool construction. Test credentials, role provisioning, grants, and
+// run-database management stay unreachable from this file.
+func TestMigrateDbenvSymbolRestriction(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "store", "migrate.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, banned := range []string{
+		"TestRoleName", "TestRolePassword", "EnsureClusterRoles",
+		"GrantTestPrivileges", "CreateRunDB", "NewRunDBName", "IsRunDB",
+	} {
+		if strings.Contains(body, "dbenv."+banned) {
+			t.Errorf("store/migrate.go reaches dbenv.%s (test-only surface)", banned)
+		}
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	// Tests execute with CWD = the package directory (<root>/store).

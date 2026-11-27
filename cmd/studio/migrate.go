@@ -17,6 +17,7 @@ import (
 func runMigrate(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	dsnFile := fs.String("dsn-file", "", "path to a file holding the owner database URL")
+	metadataFile := fs.String("metadata-file", "", "branch binding JSON from dev bind (or NEON_* env)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -31,7 +32,11 @@ func runMigrate(args []string) error {
 	if dsn == "" {
 		return fmt.Errorf("migrate: set STUDIO_OWNER_DATABASE_URL or --dsn-file")
 	}
-	if err := store.Migrate(context.Background(), dsn); err != nil {
+	pol, err := devPolicy(*metadataFile)
+	if err != nil {
+		return err
+	}
+	if err := store.Migrate(context.Background(), dsn, pol); err != nil {
 		return redactDSN(err, dsn)
 	}
 	version, err := store.LatestVersion()

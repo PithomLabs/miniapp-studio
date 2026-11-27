@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
@@ -39,10 +40,10 @@ func setupTestEnv(t *testing.T) testEnv {
 		t.Fatalf("owner pool: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	if err := Migrate(ctx, dsn); err != nil {
+	if err := Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+	if err := dbenv.GrantTestPrivileges(ctx, owner); err != nil {
 		t.Fatalf("GrantTestPrivileges: %v", err)
 	}
 	appDSN := testdb.AppDSN(t, dsn)
@@ -88,7 +89,7 @@ func mustUpsertOperator(t *testing.T, env testEnv, tenant, binding string) {
 
 func TestMigrateIdempotent(t *testing.T) {
 	env := setupTestEnv(t)
-	if err := Migrate(context.Background(), env.dsn); err != nil {
+	if err := Migrate(context.Background(), env.dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("second Migrate: %v", err)
 	}
 	var version uint
@@ -129,7 +130,7 @@ func TestMigrateRequiresFramework(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed.Path = "/" + dbname
-	if err := Migrate(ctx, parsed.String()); err == nil {
+	if err := Migrate(ctx, parsed.String(), testdb.Policy(t)); err == nil {
 		t.Error("migrate without framework schema accepted, want refusal")
 	} else if !strings.Contains(err.Error(), "framework schema") {
 		t.Errorf("error = %v, want framework-schema refusal", err)
@@ -263,16 +264,16 @@ func TestRoleAttributes(t *testing.T) {
 	check(`SELECT NOT has_function_privilege('studio_app', 'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
 		true, "app cannot execute operator_upsert")
 	// U5.12: the test role carries the identical attribute shape.
-	check(`SELECT NOT rolbypassrls FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'`, true, "test NOBYPASSRLS")
-	check(`SELECT rolcanlogin FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'`, true, "test LOGIN")
+	check(`SELECT NOT rolbypassrls FROM pg_roles WHERE rolname = '`+dbenv.TestRoleName+`'`, true, "test NOBYPASSRLS")
+	check(`SELECT rolcanlogin FROM pg_roles WHERE rolname = '`+dbenv.TestRoleName+`'`, true, "test LOGIN")
 	check(`SELECT NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
-		WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = '`+testdb.TestRoleName+`'))`,
+		WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = '`+dbenv.TestRoleName+`'))`,
 		true, "no memberships for test role")
 	check(`SELECT NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner
-		WHERE r.rolname = '`+testdb.TestRoleName+`')`, true, "test owns no objects")
-	check(`SELECT has_function_privilege('`+testdb.TestRoleName+`', 'studio.session_lookup(text)', 'EXECUTE')`,
+		WHERE r.rolname = '`+dbenv.TestRoleName+`')`, true, "test owns no objects")
+	check(`SELECT has_function_privilege('`+dbenv.TestRoleName+`', 'studio.session_lookup(text)', 'EXECUTE')`,
 		true, "test executes lookup")
-	check(`SELECT NOT has_function_privilege('`+testdb.TestRoleName+`', 'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
+	check(`SELECT NOT has_function_privilege('`+dbenv.TestRoleName+`', 'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
 		true, "test cannot execute operator_upsert")
 	for _, table := range []string{"operators", "sessions", "apps", "app_specs", "deployments", "runs",
 		"conversations", "messages", "builds", "turns", "questions",

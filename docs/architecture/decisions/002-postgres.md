@@ -1,6 +1,7 @@
 # ADR-002: Platform database — MPG Developer (PG17)
 
-**Status:** Decided 2026-11-24, conditional on deploy-time smoke test.
+**Status:** SUPERSEDED by ADR-004 (Neon-first PostgreSQL) on 2026-11-27. Preserved as history; no longer operative.
+Originally decided 2026-11-24, conditional on deploy-time smoke test.
 **Decision:** Fly Managed Postgres, Developer plan, PostgreSQL 17, same region
 as the Studio app. **Fallback:** Neon, on the triggers below.
 **Basis:** code-verified requirements + official MPG docs (checked 2026-11-24)

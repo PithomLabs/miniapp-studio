@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/PithomLabs/miniapp-studio/store"
-	"github.com/PithomLabs/miniapp/testkit"
+	"github.com/PithomLabs/miniapp-studio/testdb"
 )
 
 func TestProvisionRun(t *testing.T) {
@@ -36,7 +36,7 @@ func TestProvisionRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	dsn := strings.TrimSpace(string(raw))
-	testkit.MigrateUp(t, dsn)
+	testdb.FrameworkBaseline(t, dsn)
 	ctx := context.Background()
 	owner, err := store.NewPool(ctx, dsn, 0)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestProvisionRun(t *testing.T) {
 	if err := store.RotateAppRole(ctx, owner, strings.TrimSpace(string(pwRaw))); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Migrate(ctx, dsn); err != nil {
+	if err := store.Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	if err := store.UpsertOperator(ctx, owner, "t-demo", "demo-op", true); err != nil {

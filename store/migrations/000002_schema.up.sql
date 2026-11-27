@@ -136,6 +136,25 @@ GRANT SELECT, INSERT ON studio.sessions TO studio_lookup;
 GRANT UPDATE (revoked_at) ON studio.sessions TO studio_lookup;
 GRANT SELECT ON studio.operators TO studio_lookup;
 
+-- Ownership-transfer prerequisites for the ALTER ... OWNER TO
+-- statements below. Postgres requires the executor to hold SET ROLE
+-- ability on the new owner AND the new owner to hold CREATE on the
+-- schema; Neon branch owners are not superusers, so neither is
+-- assumed. The canonical SET repair lives in 000001 — this migration
+-- only ASSERTS both postconditions and aborts naming the failed
+-- invariant (no divergent second repair). studio_lookup is NOLOGIN
+-- and reachable only via fixed-body SECURITY DEFINER functions or an
+-- owner SET ROLE, so CREATE grants it no app-facing power.
+GRANT CREATE ON SCHEMA studio TO studio_lookup;
+DO $$ BEGIN
+  IF NOT pg_has_role(session_user, 'studio_lookup', 'SET') THEN
+    RAISE EXCEPTION 'precondition failed: migration principal cannot SET ROLE studio_lookup (000001 repair did not take effect)';
+  END IF;
+  IF NOT has_schema_privilege('studio_lookup', 'studio', 'CREATE') THEN
+    RAISE EXCEPTION 'precondition failed: studio_lookup lacks CREATE on schema studio';
+  END IF;
+END $$;
+
 -- Session functions. Fixed SQL, fully qualified names, hardened search_path.
 -- Owned by the lookup role; PUBLIC execution revoked; app role executes.
 

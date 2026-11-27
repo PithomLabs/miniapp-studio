@@ -1,0 +1,9 @@
+# Studio integration-test runner (Option 2). Deliberately minimal: the
+# entrypoint compiles the control plane from the mounted repo with the
+# mounted Go toolchain, so the image carries no Go, no source, no module
+# cache, and no secrets. Build with the testrunner dir as context:
+#   docker build -t studio-test-runner:1 ./testrunner
+FROM debian:stable-slim
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

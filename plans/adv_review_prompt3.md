@@ -1,393 +1,361 @@
-# Adversarial Code Review — Miniapp Studio P1 Specification and Validator
+# Adversarial Security Review — Host Execution Broker (prompt3)
 
-- Scope: `spec/` package only (P1). Read-only review; no code modified.
-- Reviewer posture: principal Go architect / application-security reviewer.
-- Date: 2026-11-24. Studio root: `/home/chaschel/Documents/go/miniapp-studio`.
+## Executive verdict: BLOCKED
 
-## Executive verdict
+The broker's **Docker-operation confinement holds**: every `docker` argv is
+fixed at the broker side, no job-supplied value reaches an argument vector,
+and the nine-operation allowlist cannot be widened from the queue. But the
+**execution-integrity boundary is broken in two demonstrated ways**: the
+build-pin set does not cover the full build context (H1, deterministic,
+no race needed), and pin verification races the build over an
+agent-writable path (H2). Either lets an untrusted agent decide what code
+runs inside the authorized `image.build` / `container.run` operations —
+forging a green suite, exfiltrating the test DSN into agent-readable
+results, and flipping the one-way auto-disarm. Those two findings alone
+block installation. The queue TOCTOU/unbounded-read pair (M1/M2) adds a
+trivial persistent-DoS chain, and the evidence-integrity findings (M3/M4)
+mean owner acceptance would be read from forgeable files.
 
-**APPROVE P1** — with four MAJOR findings to contain and track into P2.
+Direct answer to §8: an adversarial agent **cannot** make the broker run
+an unlisted Docker operation, but it **can** corrupt what executes inside
+the listed operations and forge the resulting evidence — so installation
+is BLOCKED until H1/H2 (and, for a trustworthy acceptance, M3/M4) are fixed.
 
-I attempted to defeat every foundational P1 claim with ~90 hostile inputs executed
-against the real code (not inferred from comments). The core trust-boundary result
-holds: **no JSON input I could construct validates (`len(errs) == 0`) while
-containing an external write.** Every non-GET method, every non-read effect, every
-`externalWrites` value other than `disabled`, every unknown step/trigger
-discriminator, and every unknown struct field is rejected. Hashing is stable,
-mutation-safe, formatting-independent, and owner-sensitive. Tenant ownership cannot
-be omitted. The package is standard-library-only with zero framework coupling.
+No remediation was performed: the session instruction ("do not modify any
+codebase") overrides prompt3 §6. Smallest durable corrections are given
+per finding instead. No broker installation, service start, or Docker
+infrastructure operation was performed.
 
-The required precision, however, is this: **writes are thoroughly *rejected by the
-validator*, not *unrepresentable in the data model*.** The Go types use plain
-`string` fields, `Validate` returns a populated spec alongside errors, and any
-caller that ignores `errs` (or constructs `MiniappSpec` directly) holds a
-write-laden value. Code comments overclaim structural unrepresentability. That gap
-is real but it is a validator-rejection guarantee plus a P2 enforcement handoff,
-not a P1 structural defect — no JSON-schema package can make a string field
-unconstructible in Go, and demanding that of P1 would block the foundation on an
-unattainable property. The four MAJOR findings below (representability/API shape,
-silently ignored per-type fields, path-traversal asymmetry, name-only secret
-scanning) are containable without restructuring P1 and must be carried as explicit
-P2 requirements. No finding meets the BLOCKER bar (a write accepted in a valid
-spec, a validation bypass, unstable hash identity, omittable ownership, or
-framework coupling).
+## Scope reviewed
 
-## Invariant scorecard
+- `hostexec/policy.go`, `hostexec/queue.go`, `hostexec/exec.go`,
+  `hostexec/serve.go`, `hostexec/hostexec.service`,
+  `hostexec/{policy,queue,exec,serve}_test.go`
+- `cmd/hostexec/main.go`
+- `testrunner/{Containerfile,entrypoint.sh,main.go,relay.go,netcheck.go,relay_test.go}`
+- `docs/host-exec-broker.md`, `docs/test-runner.md`, `testdb/testdb.go`
+  (DSN-echo check only), `.gitignore`
+- Out of scope / untouched: live Docker daemon, PG19, systemd install.
 
-| Invariant | Verdict | Code evidence | Test evidence | Remaining limitation |
-| --------- | ------- | ------------- | ------------- | -------------------- |
-| Read-only structure | PASS (validator-rejected, see F1) | `spec/validate.go:194-199` method/effect equality; `:580-583` externalWrites; `:480-483` step discriminator; `:447-449` trigger | `invalid_capability.json`, `invalid_unapproved_send.json`, `TestDeliberateRejection` asserts method+effect | Rejected, not unrepresentable: plain strings, invalid spec returned non-nil (`validate.go:103-136`) |
-| Type/schema integrity | PASS with MAJOR gaps (F2, F6) | Closed maps `validate.go:64-84`; exact version `122-125`; zero-value policy per field | `invalid_version.json`, `invalid_unknown_section.json`, `TestMalformedJSON` | Irrelevant per-type fields ignored; binding sub-paths/columns unchecked; direct construction bypasses |
-| Canonical hashing | PASS with MINOR gap (F7) | `spec/hash.go:14-26` canonical form; `:32-50` hash minus contentHash | 5 hash tests incl. round-trip stamp/tamper | float64 collapses integers >2^53; key-sort rests on stdlib guarantee |
-| Validator correctness | PASS with MINOR gaps (F5) | Strict decode `:116-121`; secrets-first `:114`; fixed section order `:126-134`; sorted map walks `:142-146`, `:487-491` | `TestDeterminism`, 13-fixture matrix, secret case-insensitivity | Duplicates last-win; field names case-insensitive; no Decoder EOF check (masked by pre-scan) |
-| Tenant ownership | PASS (schema only) | Required `validate.go:174-176`; single `Owner` field `spec/types.go:100-107`; hashed with content | Indirect (no committed owner-variant test) | Free-form string, no normalization; persistence isolation is P2+ work |
-| Dependency isolation | PASS | Imports in `spec/hash.go:3-8`, `spec/validate.go:3-10` are stdlib-only; `go.mod` has zero requires | `go list -m all` single module; `go list -deps` stdlib-only | None |
-| Regression coverage | PASS with MINOR gap (F9) | 11 test funcs, 13 invalid subcases, deliberate-reject test | `go test`, `go test -race` green | Breadth gaps: no committed tests for PUT/PATCH/DELETE, null sections, dup keys, trailing docs, conn-secret |
+## Confirmed findings
 
-## Required conclusion (prompt §2.A)
+### H1 — HIGH: pin set incomplete; unpinned files in the build context are compiled in
 
-**A write in v1 is rejected by the validator; it is not unrepresentable in the
-data model.** The precise boundary:
+- **Files:** `hostexec/policy.go:206-214` (`PinInputs`, 5 files);
+  `hostexec/serve.go:150-163` (pin gate); `testrunner/entrypoint.sh:34,67`
+  (`go build` / `go test ./...`); `hostexec/exec.go:117` (context =
+  `<repo>/testrunner`).
+- **Preconditions:** workspace write (granted). No race, no timing.
+- **Attack:** (a) add `testrunner/pwn.go` (`package main`, `init()` posts
+  `TEST_DATABASE_URL` to `/results/` and/or forces exit 0); submit
+  `image.build` — the 5 pinned hashes still match, build succeeds,
+  malicious code is in the image. (b) Tamper with the already-present
+  unpinned `testrunner/relay_test.go`: it executes under `go test ./...`
+  in run mode with the DSN in env.
+- **Impact:** forged green suite → premature auto-disarm (privileged
+  state flip + deployment DoS); test-DSN exfil into agent-readable
+  `test-results/`; arbitrary code in the runner container.
+- **Evidence (demonstrated):** P7 probe — added a marker `pwn.go` to a
+  copy of the runner sources, `go build`, marker present in binary
+  (`strings | grep -c` = 1). `relay_test.go` exists in-context and is
+  absent from `PinInputs()` by inspection; it runs (`testrunner` suite
+  passes, 8/8).
+- **Root cause:** pin coverage was enumerated as "the 5 known files"
+  instead of "the whole build context".
+- **Correction:** hash the entire context: walk `<repo>/testrunner`,
+  pin every regular file (fail on unexpected names), or stage verified
+  bytes to owner-side `StateDir` and build from the stage (also fixes H2).
 
-- *JSON boundary (enforced):* any document containing `method != "GET"`,
-  `effect != "read"`, `externalWrites != "disabled"`, an unknown step type, or
-  an unknown trigger fails validation. Verified empirically across ~90 hostile
-  variants (see Verification record). A P2 runner that refuses to execute unless
-  `len(errs) == 0` cannot receive a write through this boundary.
-- *Go boundary (not enforced, cannot be at reasonable cost):*
-  `CapabilityOp{Method: "POST", Effect: "write"}` compiles; `Validate` returns
-  it populated next to 2 errors; `ContentHash` will happily hash an unvalidated
-  struct. Any in-process construction path that skips `Validate` is outside the
-  P1 guarantee by design.
-- *Runtime boundary (does not exist yet):* no interpreter exists to confuse, so
-  no runtime write is possible today; P2 must re-validate at admission and at
-  execution time and must dispatch strictly on step type.
+### H2 — HIGH: pin check races the build over an agent-writable path (TOCTOU)
 
-## Findings
+- **Files:** `hostexec/serve.go:151` (`HashPinInputs(RepoRoot)`) then
+  `hostexec/exec.go:117` (`docker build … <repo>/testrunner`).
+- **Preconditions:** workspace write. The window between hash and the
+  daemon reading the context is milliseconds-to-seconds and re-arms on
+  every `image.build` job, so a swap loop wins reliably.
+- **Attack:** loop `rename()` between a pristine and a backdoored
+  `testrunner/entrypoint.sh`; submit `image.build` repeatedly. Any pass
+  of the hash followed by the daemon reading the backdoored bytes bakes
+  the attacker's entrypoint into `studio-test-runner:1`.
+- **Impact:** same as H1 (image content fully attacker-chosen).
+- **Evidence:** code-level (two separate operations, no lock/snapshot,
+  agent-writable path throughout). The P3 probe proves the sibling
+  queue race is winnable at 12%/attempt with a naive loop; this window
+  is orders of magnitude wider.
+- **Root cause:** verify-then-use on untrusted storage without
+  snapshotting.
+- **Correction:** after hashing, copy the pinned tree to an owner-side
+  staging dir under `StateDir`, re-hash the copies, and `docker build`
+  the stage. One fix covers H1+H2 if the stage is populated by an
+  allowlisted full-context walk.
 
-### F1 — Writes are representable in Go; invalid specs are returned usable (MAJOR, non-blocking)
+### M1 — MEDIUM: `Claim` Lstat→ReadFile TOCTOU; symlink/FIFO swap wins
 
-- Severity: MAJOR. Does not block P2 (containable via handoff + comment/API correction).
-- Location: `spec/types.go:38-40` (comment claims structural enforcement),
-  `spec/types.go:224-232` (`Method`/`Effect` are plain strings),
-  `spec/validate.go:103-136` (returns `&spec` with `errs != nil`),
-  `spec/validate.go:582` (message text "writes are unrepresentable until G-01").
-- Repro (executed): `Validate` of an op with `method POST` / `effect write`
-  returns `spec != nil` with `spec.Capabilities.Operations[0].Method == "POST"`.
-  `doc=null` and `doc={}` return non-nil specs with 9 errors. Direct
-  construction `MiniappSpec{...Method: "POST", Effect: "write"...}` compiles and
-  `ContentHash` hashes it. Only the strict-decode path (`validate.go:118-121`)
-  returns nil.
-- Root cause: the "closed vocabulary" is a validator map lookup over exported
-  string fields, not a type-level constraint; and the API shape invites
-  `spec, _ := Validate(raw)`.
-- Durable correction: (1) fix the overclaim comments (`types.go:38-40`,
-  `validate.go:582`, `CapabilityOp` doc) to say "rejected by the validator";
-  document on `Validate` that a non-empty error slice forbids any use of the
-  returned spec; (2) P2 must gate every admission and execution on
-  `len(errs) == 0` (see P2 handoff); (3, optional, owner decision) change
-  `Validate` to return `nil` spec whenever `errs` is non-empty, or add a
-  struct-level `ValidateSpec(*MiniappSpec)` entry for constructed/transformed
-  specs. Do not add a third-party validation framework.
-- Regression test: `TestInvalidSpecMustNotBeUsed` — write-op JSON yields errors
-  and (after correction 3) a nil spec; plus a test that a programmatically
-  built write-op struct fails struct-level validation. Fails before, passes after.
-- Blocks P2: no, provided the P2 handoff gate is honored.
+- **Files:** `hostexec/queue.go:78-108` (Lstat guard, then
+  `os.ReadFile(src)` + `os.Rename` on the path, not the handle).
+- **Preconditions:** workspace write; naive rename loop.
+- **Attack:** alternate `pending/v.json` between a regular job and a
+  symlink (or FIFO) while the broker claims. Lstat passes on the
+  regular file; `ReadFile` follows the swapped-in symlink, or blocks
+  forever on a FIFO (single-threaded broker, no read timeout — full
+  wedge until owner intervenes).
+- **Impact:** out-of-queue file content read into job bytes (limited
+  oracle via reject reasons); reliable broker wedge via FIFO (DoS);
+  executed bytes diverge from the `running/` file (audit mismatch).
+- **Evidence (demonstrated):** P3 probe, 3000 claims under swapping:
+  `outside-byte hits=370 regular=1415 empty=1215`. Every hit is a
+  claim whose bytes came from the symlink target after the Lstat guard
+  passed — the guard is bypassable at will.
+- **Root cause:** path-based check-then-use instead of handle-based.
+- **Correction:** `open(O_NOFOLLOW)` → `fstat` (regular only) →
+  size-capped read from the fd → `rename`. One change also fixes M2.
 
-### F2 — Fields irrelevant to a step/component type are silently accepted (MAJOR, non-blocking)
+### M2 — MEDIUM: unbounded job read before the size check; OOM crash loop
 
-- Severity: MAJOR. Does not block P2 (no accepted input gains an *effective*
-  write, since the referenced write capability itself cannot validate).
-- Location: `spec/validate.go:476-538` (`checkStep` never rejects inapplicable
-  fields), `spec/validate.go:366-398` (`checkComponent` same),
-  `spec/types.go:204-214` (shared `Step` shape), `spec/types.go:178-186`
-  (shared `Component` shape).
-- Repro (executed, all `nerr=0`): `transform` carrying
-  `operation:"mail.send"`, `path:"/send"`, `condition`, `message`,
-  `maxIterations`; `branch` and `bounded-loop` carrying `operation:"mail.send"`;
-  `notify` carrying `operation:"mail.send"`; `form` carrying
-  `binding:"ghost_query"` plus `columns` (undeclared reference accepted because
-  forms only check `action`); `table` carrying `action` (ignored).
-- Root cause: per-type checks assert required fields but never forbid
-  inapplicable ones, so `DisallowUnknownFields` (which only sees the shared
-  struct) cannot help. This is the "contradictory declarations" class from the
-  prompt: undeclared operations and ghost bindings ride inside known-but-ignored
-  fields of otherwise valid specs.
-- Durable correction: define a per-type field matrix (in `types.go` comments and
-  enforced in `checkStep`/`checkComponent`): `operation`/`path` only on
-  `connector-read`; `condition` only on `branch`; `maxIterations` only on
-  `bounded-loop`; `message` only on `notify`/`finish`/`confirm`; keep `output`
-  allowed on all steps (reference source) and `input` validated wherever
-  present; components: `form`/`action-button` reject `binding`/`columns`/`fields`,
-  `table` rejects `action`, binding-types reject `action`/`columns`/`fields`
-  except their consumed set. P2 must additionally dispatch strictly on type and
-  ignore nothing silently.
-- Regression tests: `TestStepIrrelevantFieldsRejected` (each matrix violation
-  yields `E_WORKFLOW`), `TestComponentIrrelevantFieldsRejected` (each yields
-  `E_COMPONENT`). Fail before, pass after.
-- Blocks P2: no, but P2 must not interpret ignored fields (handoff item).
+- **Files:** `hostexec/queue.go:105-119` (`os.ReadFile` then
+  `len(raw) > MaxJobBytes`).
+- **Preconditions:** workspace write. No race needed.
+- **Attack:** write one large regular `pending/big.json` (e.g. 1 GiB).
+  The broker reads it fully; against `MemoryMax=512M` it is OOM-killed,
+  systemd restarts it, it re-reads the same file — persistent crash
+  loop until the owner deletes the file.
+- **Impact:** durable broker DoS with one file write.
+- **Evidence (demonstrated):** P2 probe — a 32 MiB file is read in
+  full; the quarantine error echoes the exact size (`oversized:
+  33554432 bytes`), proving no capped reader is in the path.
+- **Root cause:** size enforced after allocation instead of during read.
+- **Correction:** `io.LimitReader(fd, MaxJobBytes+1)`; refuse when the
+  cap is exceeded without ever allocating the excess.
 
-### F3 — Step request paths and component targets admit `..` traversal (MAJOR, non-blocking)
+### M3 — MEDIUM: verdicts live in agent-writable space; evidence forgeable post-hoc
 
-- Severity: MAJOR. Does not block P2 (read-only GET surface; gateway/P2 owns
-  final resolution — but the asymmetry is exactly an allowlist-bypass shape).
-- Location: `spec/validate.go:502-506` (step path: only absolute-prefix plus
-  `pathAllowed`), `spec/validate.go:395-397` (target: only absolute-prefix),
-  contrast `spec/validate.go:219-228` (`validPathPattern` rejects `..` and
-  whitespace for *patterns*).
-- Repro (executed): op allowlist `["/*"]` plus step path
-  `/files/../../admin/purge` validates with `nerr=0`; `target:"/../evil"`
-  validates with `nerr=0`. Control: exact allowlist correctly rejects
-  non-matching traversal with "not in the declared allowlist". `page.path`
-  correctly rejects `..` (`validate.go:353-356`), proving the omission is local
-  to step paths and targets.
-- Root cause: two different path predicates; the stricter one was applied to
-  patterns, pages, and connections but not to step request paths or targets.
-- Durable correction: apply one shared predicate (absolute, no `..`, no
-  whitespace/controls) to step paths and targets; P2/gateway must additionally
-  normalize (dot-segment removal) and re-check membership *after*
-  normalization, never match-then-normalize. Decide and document the policy for
-  `?`/`#` (currently allowed everywhere paths appear).
-- Regression tests: `TestStepPathTraversalRejected` (`/*` + `/x/../admin`
-  yields `E_CAPABILITY`), `TestTargetTraversalRejected`. Fail before, pass after.
-- Blocks P2: no, provided P2 normalizes and re-checks (handoff item).
+- **Files:** `hostexec/queue.go:127-154` (`done/` under repo);
+  `testrunner/entrypoint.sh:58-75` (`test-results/` under repo);
+  `docs/host-exec-broker.md:87-89` (acceptance reads those files).
+- **Preconditions:** workspace write (same uid).
+- **Attack:** after (or without) any run, rewrite `done/<id>.json` and
+  `test-results/{exitcode,summary.txt,gotest.json}` to taste. The
+  broker never re-reads them for state (disarm uses the in-memory exit
+  code — that part is safe), but every owner acceptance step ("repeat
+  run identical", "exact counts") reads forgeable bytes. Bonus: squat
+  `done/<future-id>.json` to force duplicate-rejection of that id
+  (targeted job DoS via `queue.go:92-103`).
+- **Impact:** owner verification and audit trail untrustworthy.
+- **Evidence:** code + layout (both paths under `RepoRoot`, broker
+  same-uid; `.gitignore` confirms runtime-state status, not protection).
+- **Root cause:** no owner-side copy or integrity anchor for verdicts.
+- **Correction:** on `Finish`, also write the result (or its sha256)
+  to owner-side `StateDir`; acceptance compares repo copies against it.
 
-### F4 — `connection` accepts credential-shaped values; secret scan is name-only (MAJOR, non-blocking)
+### M4 — MEDIUM: `SweepStartup` trusts agent-writable `running/`; rewrites finished verdicts
 
-- Severity: MAJOR. Does not block P2 (real fix is server-side resolution).
-- Location: `spec/types.go:221-224` (comment: "must never carry a secret, URL,
-  or credential — the secret scanner rejects such fields"),
-  `spec/validate.go:190-193` (format check only: non-empty, ≤128, no
-  whitespace, no `://`), `spec/validate.go:139-159` (scans field *names* only),
-  `spec/validate.go:58-62` (name blocklist).
-- Repro (executed): `"connection": "sk-live-ABCDEF1234567890abcdef"` validates
-  with `nerr=0`. Controls: URL and whitespace connections correctly rejected;
-  secret *keys* inside free-form maps (`input.password`, `fixture.input.api_key`)
-  correctly flagged `E_SECRET`.
-- Root cause: the comment promises value protection the code never implements;
-  value-shape detection is inherently heuristic and was scoped out.
-- Durable correction: (1) correct the comment to "secret-name scanner; values
-  are not inspected"; (2) add a cheap, testable tripwire blocklist of known
-  credential prefixes (`sk-`, `AKIA`, `xoxo-`, `ghp-`, `gsk-`, `Bearer ` is
-  already excluded as whitespace/URL-adjacent) — documented as tripwire, not
-  proof; (3) P2/server resolves every `connection` against a server-side
-  registry and rejects unknown IDs (the actual fix — handoff item). Do not
-  build entropy-based secret detection into P1.
-- Regression test: `TestConnectionKnownSecretPrefixesRejected` (each prefix
-  yields `E_CAPABILITY`). Fails before, passes after. Plus a doc-locking test
-  that an opaque well-formed ID validates.
-- Blocks P2: no, provided server-side resolution is a P2 requirement.
+- **Files:** `hostexec/queue.go:171-194`.
+- **Preconditions:** workspace write + any broker restart (threat model
+  grants host restart).
+- **Attack:** plant `running/w.json` for an id whose `done/w.json` is
+  already `ok`; wait for a restart. The sweep overwrites the finished
+  verdict with `UNKNOWN`. Planting an id that never ran fabricates a
+  verdict from nothing — no `ParseJob`, no op recorded (`"op": "?"`).
+- **Impact:** downgrade/erase of finished results; fabricated verdicts.
+- **Evidence (demonstrated):** P4 probe — pre-existing
+  `done/w.json={"status":"ok"}` became full `UNKNOWN` record after
+  `SweepStartup`; planted `running/ghost1.json` produced
+  `done/ghost1.json` (`UNKNOWN`) for a job that never executed.
+- **Root cause:** sweep never checks `done/` for a terminal result and
+  never validates the residue.
+- **Correction:** skip (with a warning) any residue whose `done/<id>.json`
+  already holds a terminal result; record the residue's parsed op and
+  size in the UNKNOWN record; ignore unparseable residues loudly.
 
-### F5 — Decoder strictness gaps: duplicates, case-insensitivity, missing EOF check (MINOR)
+### M5 — MEDIUM: `LoadConfig` accepts owner-side paths inside the agent-writable repo
 
-- Severity: MINOR. No bypass: the surviving value is always itself validated,
-  and trailing documents are already rejected by the pre-scan.
-- Location: `spec/validate.go:103-121` (two-parse design; `json.Decoder` with
-  `DisallowUnknownFields` but no second `Decode` expecting `io.EOF`).
-- Repro (executed): duplicate `"method":"GET","method":"POST"` → rejected as
-  POST (last wins); reversed duplicates → accepted as GET (last wins, valid);
-  duplicate `"slug"` → accepted; `"Method"`, `"APP"`, `"SchemaVersion"` field
-  names decode fine (Go case-insensitive matching) — and hostile values under
-  variant names (`"Method":"POST"`, `"Effect":"write"`) are still rejected on
-  value; trailing document/garbage/NDJSON → `E_SCHEMA invalid JSON` (from the
-  `json.Unmarshal` pre-scan at `:111`, which masks the missing EOF check).
-- Root cause: Go `encoding/json` semantics (last-win duplicates,
-  case-insensitive fields) plus a one-`Decode` call. The pre-scan accidentally
-  but reliably covers trailing data today.
-- Durable correction: document the exact decoding contract on `Validate`
-  (case-insensitive field names, last-wins duplicates, winning value always
-  validated); add the defense-in-depth second `Decode` expecting `io.EOF` so
-  the strict path does not depend on the pre-scan for trailing-data rejection.
-  Do not hand-roll a duplicate-detecting JSON parser — cost exceeds benefit
-  while values are validated.
-- Regression tests: `TestTrailingDocumentRejected`, `TestDuplicateKeysLastWin`,
-  `TestCaseInsensitiveFieldNames` (lock documented behavior). Pass before and
-  after (EOF check is defense-in-depth).
-- Blocks P2: no.
+- **Files:** `hostexec/exec.go:41-82` (checks `QueueDir` under repo,
+  never checks `StateDir`/`EnvFile` are outside it).
+- **Preconditions:** one misconfigured install (no warning issued).
+- **Attack:** with `state_dir` under the repo, the agent edits `armed`
+  (re-arm at will), and with `env_file` under the repo the DSN file
+  sits in committable, agent-readable space; both silently void the
+  "owner-side" trust the code comments assume.
+- **Impact:** authorization bypass (re-arm) + secret mishandling.
+- **Evidence (demonstrated):** P6 probe — config with `state_dir` and
+  `env_file` inside the repo: `LoadConfig` accepted, `err=<nil>`.
+- **Root cause:** one-sided placement check.
+- **Correction:** refuse `StateDir`, `EnvFile` (and lock/state files)
+  under `RepoRoot`, mirroring the existing `QueueDir` check; refuse
+  `EnvFile` unless 0600 (already done) and outside version control.
 
-### F6 — Binding sub-paths, table columns, and duplicate step outputs unchecked (MINOR)
+### L1 — LOW: decoder accepts trailing garbage and duplicate keys
 
-- Severity: MINOR. Fail-late correctness, no trust-boundary bypass.
-- Location: `spec/validate.go:402-418` (`checkBinding` resolves only the head
-  segment), `spec/validate.go:372-380` (table requires ≥1 column, never resolves
-  any), `spec/validate.go:462-464` (outputs recorded without uniqueness).
-- Repro (executed against `valid_invoice_review.json`): table
-  `columns: ["nope_not_a_field"]` → `nerr=0`; binding
-  `"pending.nope_not_a_field"` → `nerr=0`; two steps sharing `output:"dup"` →
-  `nerr=0`. Control: duplicate step *IDs* correctly rejected.
-- Root cause: binding validation stops at the query/entity head; column/field
-  identifiers have no declared output shape to check against in v1.
-- Durable correction: resolve binding head to its entity (query→entity or
-  entity), then check the first sub-path segment and every table `columns` /
-  record `fields` entry against that entity's declared fields; reject duplicate
-  step `output` names within a workflow. Keep the grammar (`rxBinding`,
-  `checkRef`) unchanged.
-- Regression tests: `TestBindingSubPathResolved`, `TestTableColumnsResolved`,
-  `TestDuplicateStepOutputRejected`. Fail before, pass after.
-- Blocks P2: no (P2 renderer would fail late instead of at admission).
+- **Files:** `hostexec/policy.go:122-126` (single `Decode`, no EOF check).
+- **Evidence (demonstrated):** P1 probe — `{"id":"a1","op":"version"}
+  TRAILING` ACCEPT; second-JSON-object trailing ACCEPT; duplicate
+  `"op"` (last-wins → `net.create`) ACCEPT; duplicate `"id"`
+  (last-wins) ACCEPT. Oversize/off-schema cases still reject.
+- **Impact:** strictness-claim violation; audit confusion (executed op
+  differs from a naive first-key reading). No privilege gain: the
+  surviving value is still allowlisted.
+- **Correction:** after the first `Decode`, a second decode must return
+  `io.EOF`; reject duplicate keys (decode into `map[string]any` first
+  and compare, or token-scan).
 
-### F7 — Hash number model: float64 collapses integers beyond 2^53 (MINOR)
+### L2 — LOW: banned `\n` rejects ordinary job files (trailing newline, pretty print)
 
-- Severity: MINOR. Validator and hash agree (both see float64), so no
-  accept/hash disagreement; affects only very large integers in free-form
-  values.
-- Location: `spec/hash.go:14-26` (`any` decode → float64 → re-encode),
-  `spec/hash.go:32-50` (`ContentHash` via struct round-trip).
-- Repro (executed): fixture inputs `9007199254740993` vs `9007199254740992`
-  produce identical canonical JSON (`{"n":9007199254740992}`) and identical
-  content hashes. Controls (all passing): repeated hashing stable with
-  `reflect.DeepEqual`-verified non-mutation; pretty-print/key-permutation
-  invariant; empty-vs-null equivalence; HTML characters (`a<b>&"c"`) stable;
-  owner change flips the hash; key sorting recursive
-  (`{"b":1,"a":{"d":4,"c":3}}` → `{"a":{"c":3,"d":4},"b":1}`).
-- Root cause: `encoding/json` default number decoding; documented Go behavior,
-  but unstated in this package. Key-sorted canonicalization likewise rests on
-  the stdlib's documented map-key sorting rather than explicit code.
-- Durable correction: document the number model and the stdlib-sorting
-  reliance in `hash.go`; do not migrate to `json.Number` (it would change the
-  canonical form and require a normalization spec for no P1 benefit).
-- Regression tests: `TestCanonicalJSONNumberNormalization` (`1e3` vs `1000`
-  hash equal), `TestContentHashDoesNotMutate` (`DeepEqual` before/after).
-- Blocks P2: no. Note for P2: `ContentHash` (struct-normalized,
-  `omitempty`-aware, contentHash-excluded) is the authoritative identity — not
-  `CanonicalJSON` of raw input, which intentionally differs (includes the hash
-  field, preserves explicit empties).
+- **Files:** `hostexec/policy.go:88-92,184-192`.
+- **Evidence (demonstrated):** P1 probe — valid job + trailing newlines
+  REJECT (`banned token "\n"`). Any `echo '{…}' > pending/x.json` or
+  editor-saved file fails; undocumented in `docs/host-exec-broker.md`.
+- **Impact:** interop/robustness (fail-closed, but hostile to normal use).
+- **Correction:** drop `"\n"` from the banned list — newlines cannot
+  reach argv since values are enum/charset-pinned — or trim trailing
+  whitespace before the check and document single-line-canonical form.
 
-### F8 — Owner is free-form: padding and case variants accepted (MINOR)
+### L3 — LOW: duplicate quarantine is last-write-wins in `rejected/`
 
-- Severity: MINOR for P1 (canonical tenant form depends on the auth system P1
-  cannot know); P2 must not treat the string as an identity proof.
-- Location: `spec/validate.go:174-176` (non-blank, ≤256 only),
-  `spec/types.go:100-107` (single `Owner` field — unambiguous representation).
-- Repro (executed): `"owner": " acme"` and `"owner": "ACME"` validate clean;
-  absent/null/whitespace-only owners correctly yield `E_APP`; owner change
-  flips the content hash (probed). No conflicting second owner representation
-  exists anywhere in the types.
-- Root cause: v1 correctly requires *presence* but defines no canonical form.
-- Durable correction: document `Owner` as an opaque tenant label whose
-  canonical form is defined by the server; P2 derives the tenant from auth
-  context and compares/overwrites (handoff item). Do not invent P1
-  normalization rules (lowercasing/trimming) that could disagree with the
-  future auth system.
-- Regression test: `TestOwnerPresenceVariants` (absent/null/blank → `E_APP`;
-  present → accepted). Passes before and after (locks the contract).
-- Blocks P2: no.
+- **Files:** `hostexec/queue.go:92-103` (`os.Rename` overwrites).
+- **Evidence (demonstrated):** P5 probe — two sequential duplicates;
+  `rejected/a1.json` holds the second body, the first is gone.
+- **Correction:** quarantine to `a1.json.<nanos>` or refuse to
+  overwrite an existing quarantine entry.
 
-### F9 — Committed-test breadth gaps (MINOR)
+### L4 — LOW: ambiguous outcomes report `error`, never `unknown`
 
-- Severity: MINOR. The critical invariant *is* tested (POST+write fixtures and
-  `TestDeliberateRejection` asserting both method and effect violations); these
-  gaps are breadth, not absence.
-- Location: `spec/validate_test.go`, `spec/hash_test.go`.
-- Missing committed coverage (all verified manually via probes in this review,
-  none covered by `go test`): PUT/PATCH/DELETE/lowercase/empty/null methods and
-  effects; `externalWrites` variants beyond `approval`; null vs omitted for all
-  nine sections; degenerate documents beyond `{bad json` (`""`, `null`, `[]`,
-  `123`, `"str"`, `{}`, `[{}]` — all behave, unpinned); duplicate keys;
-  trailing documents; case-variant field names; multi-error determinism beyond
-  the two current fixtures; `ContentHash` non-mutation (`DeepEqual`);
-  credential-shaped `connection` (documents F4's current acceptance or its
-  prefix-tripwire fix).
-- Durable correction: add a table-driven `TestWriteShapedInputsRejected`
-  (method × effect × policy matrix), `TestNullAndOmittedSections`,
-  `TestDegenerateDocuments`, and extend `TestDeterminism` to a secret-bearing
-  multi-error input. No test should merely exercise a path — each must assert
-  the code *and* path (the `TestDeliberateRejection` style).
-- Blocks P2: no.
+- **Files:** `hostexec/serve.go:179-180,193-197,221,236`
+  (only `SweepStartup` uses `StatusUnknown`).
+- **Impact:** §F asks ambiguous outcomes to read `UNKNOWN`. Timeouts
+  after partial Docker success, partial sweep removals, and
+  "build ok but image inspect failed" are honestly non-OK but use the
+  wrong vocabulary, and agents keying on `unknown` for reconcile will
+  mis-handle them. The reconcile guidance text is present — this is a
+  contract-consistency fix.
+- **Correction:** use `StatusUnknown` for timeout/partial/indeterminate
+  outcomes; reserve `error` for determinate failure.
 
-## What I verified as genuinely sound (PASS details)
+### L5 — LOW: disarm equates container exit 0 with a "genuinely successful full suite"
 
-- **Method/effect/policy/step/trigger rejection.** 30+ hostile variants, all
-  rejected with precise codes and paths; no false acceptance found.
-- **Unknown-field rejection at every struct level** (top-level, app, trigger,
-  step, operation) via `DisallowUnknownFields` — probed, not assumed.
-- **Null/omitted equivalence is total and consistent**: all nine sections behave
-  identically under `null` and omission (required ones error, optional ones
-  default). No `null`-smuggled bypass.
-- **No-panic robustness**: empty, scalar, array, null, truncated, and
-  type-mismatched documents all yield `E_SCHEMA`/semantic errors; `checkRef`
-  slicing is guarded by regex match; `mustMarshal`'s `panic` is unreachable for
-  JSON-derived values.
-- **Determinism**: fixed section order, sorted secret-scan and input-ref walks,
-  no validators range over maps for output; multi-error ordering stable across
-  runs (probed with `reflect.DeepEqual`).
-- **13-code taxonomy is closed and consistent**: all 13 constants
-  (`validate.go:17-31`) are used; `Error()` embeds code+path+message; error
-  strings echo spec content (contains no secrets by policy) — P2 should still
-  treat them as tenant content, not cross-tenant-safe logs.
-- **Hash**: excludes exactly `metadata.contentHash` (`hash.go:41-43`);
-  `omitempty` normalization is semantically correct (explicit `0`/`""`/`[]`
-  hash identically to omitted); validation and hashing agree (checkHash runs
-  last over the same struct).
-- **Tenant foundation**: exactly one owner representation, required, hashed;
-  within-spec uniqueness checks are correctly spec-scoped (capabilities,
-  entities, queries, workflows, steps, pages, fields, fixtures, roles) —
-  nothing imposes or omits a global-uniqueness claim P1 cannot keep.
-- **Dependency isolation**: `go list -m all` reports the single module;
-  `go list -deps ./spec` reports stdlib plus the spec package itself; no
-  Miniapp runtime, Fly, Sprite, provider, or DB imports. (The string
-  "miniapp" appears only in `miniappspec/v1` literals.)
-- **No input mutation**: `Validate` reads bytes; `ContentHash` verified
-  non-mutating via `DeepEqual`; the validator accumulates into its own struct.
+- **Files:** `hostexec/serve.go:137-145`; suite content = agent-writable
+  repo, tests unpinned.
+- **Impact:** an agent can gut/bypass tests to force exit 0 → hollow
+  green → premature disarm + misleading evidence. The only control is
+  owner review of the repo diff, and the broker records nothing at
+  disarm time (one log line) to support that review.
+- **Correction:** at disarm, persist `git HEAD`, `git status --porcelain`,
+  and `gotest.json` package pass counts into `StateDir`; make them
+  acceptance inputs in `docs/host-exec-broker.md`.
 
-## Verification record
+### L6 — LOW: entrypoint hardcodes a one-machine module-cache path
 
-Environment: sandbox shell with Go toolchain; default `GOCACHE` was read-only,
-so Go commands ran with `GOCACHE=/tmp/gocache-adv
-GOPATH=/tmp/gopath-adv GOTOOLCHAIN=local`. All probes ran from `/tmp/advprobe`
-(a scratch module with a `replace` directive); **no repository file was created,
-modified, or deleted except this review**, per instruction.
+- **Files:** `testrunner/entrypoint.sh:27`
+  (`GOMODCACHE=/home/chaschel/go/pkg/mod`) vs broker-mounted
+  `c.ModCache` (`hostexec/exec.go:133`).
+- **Impact:** on any other machine/user the mounted cache is ignored
+  and the hermetic build (`GOPROXY=off`) fails — fail-closed, but a
+  portability/reliability defect in the deployment path.
+- **Correction:** probe a short candidate list (mount path-derived)
+  and use the first existing dir, or have the broker pass the path via
+  a broker-written file in the results mount… simplest is entrypoint
+  probing with loud failure listing candidates.
 
-| Command | Result |
-| ------- | ------ |
-| `gofmt -l .` | clean (empty output, exit 0) |
-| `go vet ./...` | pass (exit 0; initial run failed only on sandbox read-only default cache) |
-| `go build ./...` | pass (exit 0) |
-| `go test ./...` | pass (`spec` ok; root has no test files) |
-| `go test -race -count=1 -v ./spec/` | pass: 11 test funcs, 13 `TestInvalidFixtures` subtests, 0 failures |
-| `go list -m all` | single module `github.com/PithomLabs/miniapp-studio` |
-| `go list -deps ./spec` | stdlib packages + spec package only |
-| CI gates in `.github/workflows/ci.yml` (`gofmt`, `vet`, `build`, `test`) | all four executed locally and passing |
-| Adversarial probe suite (`/tmp/advprobe`, 3 runs, ~90 inputs) | all findings above reproduced from live output; first run's hash section was re-executed after a probe-side index bug (repo untouched) |
-| `spec/testdata` file count | **14 files** (13 invalid + 1 valid), not 15 as the prompt states — description discrepancy, not a code defect |
-| Test-function count | 11 (`validate_test.go:6`, `hash_test.go:5`) — matches the claim |
-| Not run | PostgreSQL/P0 Docker steps — out of scope for this P1 review (stdlib-only suite needs no DB) and unavailable from the sandbox |
+## Informational / accepted residuals
 
-## P2 handoff (must-preserve requirements)
+- **I1** `inspect.readonly:net.ls` discloses unrelated network names to
+  the agent (read-only, needed for reconcile; accept + note).
+- **I2** Runner runs as root, no `--user`; results mount rw → root-owned
+  files in the repo. Consider `--user`, tmpfs `GOCACHE`.
+- **I3** No rate limit on steady-state `container.run` — run-spam is a
+  local resource DoS. Accept for owner-gated local use.
+- **I4** Full container output lands unscrubbed in `test-results/` while
+  broker tails are scrubbed (`Scrub`, `exec.go:172`). Benign suite
+  verified not to echo credentials (`testdb` errors name host/port/db
+  only). A malicious agent-authored test printing the DSN is inherent
+  to handing the DSN to agent code — the real boundary is cluster
+  scoping + rotation; document it as accepted.
+- **I5** `go.mod`/`go.sum` unpinned — analyzed fail-closed
+  (`GOPROXY=off`, `--internal` net); still, add to the pin set with H1.
+- **I6** `hostexec pin` blesses whatever tree it reads — procedural
+  control; require git-clean + known-commit + review before recording.
+- **I7** `container.run` uses the image tag, not the digest recorded at
+  build; re-pointing needs a host-side Docker actor (trusted). Note.
+- **I8** Unit is a solid baseline (`NoNewPrivileges`, `ProtectSystem=strict`,
+  `AF_UNIX|AF_NETLINK`-only, `MemoryMax`). Optional: `ProtectKernelTunables`,
+  `ProtectControlGroups`, `PrivateDevices`, `SystemCallFilter`.
+- **I9** Checked, not a finding: `\uXXXX`-escaped banned tokens bypass
+  the raw-bytes backstop but decoded values are charset/enum-pinned
+  (P1 `semicolon-u-escape` still rejected) — harmless as designed.
+- **I10** Stated assumption: config/state/pin integrity ultimately rests
+  on the agent sandbox confining writes to the workspace (same uid).
+  Correct install per docs satisfies this; M5 is the guardrail gap.
 
-1. **Gate everything on validation.** Refuse to admit, render, or execute unless
-   `len(errs) == 0`; never use a spec returned alongside errors (F1).
-   Re-validate at execution time — admission-time validity is not
-   execution-time validity — and bind each run to the `ContentHash` it started with.
-2. **Preserve the v1 read-only boundary at runtime.** The runner issues GET
-   requests only, through declared capabilities, to allowlisted paths; the
-   renderer adds no write affordance. Any future write needs a schema-version
-   bump and the G-01 lifecycle — never a quiet interpreter extension.
-3. **Dispatch strictly on step type; resolve connections server-side.**
-   Ignore nothing silently (F2); resolve every `connection` against a
-   server-side registry and reject unknown IDs and inline credentials (F4).
-4. **Normalize and re-check paths after normalization** for step paths and
-   targets: reject `..`/whitespace/controls, decide `?`/`#` policy, and never
-   match-then-normalize (F3). Treat `/*` as the operator's explicit
-   broad-allowlist choice, and surface its breadth at admission.
-5. **Derive tenancy from auth context.** Compare (or overwrite) `app.owner`
-   against the server-derived tenant; define the canonical owner form there
-   (F8). Future persistence scopes every record by (tenant, app ID); P1
-   provides the pair, not the isolation.
-6. **Bound input before validating.** `Validate` double-parses with no size
-   cap; P2 must enforce a max request size ahead of it.
-7. **Use `ContentHash` as the identity**, never `CanonicalJSON` of raw input
-   (different normalization, includes the hash field). Stay clear of integers
-   beyond 2^53 in free-form values (F7).
-8. **Track F1–F4 corrections** (comment accuracy, per-type field matrix, path
-   predicate unification, connection tripwire + registry) as P2-adjacent work;
-   each ships with its named regression test. F5–F9 are document-and-pin.
+## What held under attack (§4 mapping)
 
-## Final decision
+1. Command injection — argv fully broker-constructed, pinned by
+   `TestArgvFixed`; no shell anywhere. HELD.
+2. Unknown ops/fields — `DisallowUnknownFields` + allowlists. HELD
+   (modulo L1 trailing/dup laxity).
+3. Mounts/network modes — constants only; no `--privileged`, host net,
+   socket, or published ports in any argv. HELD.
+4. Symlink/traversal (static) — non-regular skipped, names never leave
+   the scanned dir. HELD statically; M1 breaks it dynamically.
+5. Duplicates/replays — quarantined, never re-executed. HELD (modulo L3).
+6. Single-flight — single thread + `flock` + `TestServeSecondInstanceRefused`. HELD.
+7. Forged disarm via queue — impossible; disarm reads the real exit
+   code. HELD as a queue property; H1/H2/L5 attack the exit code's
+   meaning instead.
+8. Re-arm — no queue path; filesystem-only. HELD given correct install
+   (modulo M5).
+9. Pin tamper (5 files) — refused, tested (`TestBuildPinDrift`). HELD
+   narrowly; H1/H2 bypass outside the 5.
+10. Crash → UNKNOWN via sweep. HELD (modulo M4 planting, L4 vocabulary).
+11. Broker results scrubbed + bounded (`Scrub`+`Tail`, tested). HELD
+    (I4 covers the container-side half).
+12. Unit confinement — reviewed, correct for CLI-over-socket (I8).
 
-**Proceed: P1 is accepted as the foundation for P2.** No foundational or
-structural blocker was found after adversarial testing of the hostile-input
-boundary, the hash identity, ownership, and dependency isolation. Start P2 after
-the separate P0 dependency gate (Docker Postgres access) passes. No further
-general review cycle is requested; the MAJOR findings above are tracked work
-with durable corrections and named regression tests, not re-review triggers.
+## Remediation performed
+
+None — forbidden by the session's do-not-modify constraint, which
+overrides prompt3 §6. Corrections above are specified to be directly
+implementable; H1+H2 share one fix (owner-side staged build from a
+fully-pinned context walk), M1+M2 share one fix (handle-based capped
+claim). Predicted re-review surface after fixes: `queue.go` claim path,
+pin/build path, two regression probes (P3→0 hits, P7→refusal).
+
+## Owner decisions required
+
+1. Accept BLOCKED and schedule the H1/H2 fix before any install GO.
+2. Decide M3's evidence anchor (owner-side result copies/hashes) as a
+   precondition for trusting acceptance, or accept forgeable evidence.
+3. Confirm I4 (DSN-to-suite is inherently agent-visible; boundary =
+   scratch-cluster scoping + rotation) as accepted doctrine.
+4. Confirm correct-install values so M5's guardrail has a defined
+   target (state/env strictly outside the repo).
+
+## Test evidence
+
+| Check | Command | Result |
+|---|---|---|
+| gofmt | `gofmt -l hostexec/ testrunner/ cmd/hostexec/` | clean (no output), exit 0 |
+| vet | `go vet ./hostexec/ ./testrunner/ ./cmd/hostexec/` | clean, exit 0 |
+| build | `go build ./...` | clean, exit 0 |
+| unit (broker) | `go test -count=1 ./hostexec/` | ok, 28/28 `--- PASS`, 0 fail/skip |
+| unit (runner) | `go test -count=1 ./testrunner/` | ok, 8/8 `--- PASS`, 0 fail/skip |
+| race | `go test -race -count=1 ./hostexec/` | ok |
+| full serial | `go test -p 1 -count=1 ./...` | exit 0, 19 `ok`, 0 FAIL/panic, 3 no-test-files pkgs |
+| P1 decoder | `/tmp/hxprobe2/p1.go` | trailing/dup ACCEPT (L1); newline REJECT (L2) |
+| P2 oversize | `/tmp/hxprobe2/p245/` | full 32 MiB read, exact-size error (M2) |
+| P3 swap race | `/tmp/hxprobe2/p3/` | 370/3000 outside-byte claims (M1) |
+| P4 sweep | `/tmp/hxprobe2/p245/` | OK→UNKNOWN overwrite; ghost verdict (M4) |
+| P5 dup | `/tmp/hxprobe2/p245/` | last-write-wins (L3) |
+| P6 config | `/tmp/hxprobe2/p6/` | in-repo state/env accepted (M5) |
+| P7 unpinned | `/tmp/p7mod/` | marker compiled into binary (H1) |
+
+Source-level + fake-Docker (`TestServe*`, fixture script) verification
+only. No broker install, no live-Docker, no PG-backed run was performed
+or authorized. Probes live outside the repo (`/tmp/hxprobe2/*`,
+`/tmp/p7mod`) and are re-runnable; the repo tree was not modified
+(`git status` shows only pre-existing plan deletions plus `.gitignore`).
+
+## Installation readiness
+
+NOT READY. Do not install, start, or GO any deployment job until H1/H2
+are fixed and P3/P7-style regression probes are green, and do not treat
+repo-side verdicts as authoritative until M3/M4 are addressed.
+

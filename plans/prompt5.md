@@ -1,531 +1,337 @@
-I recommend a **focused P4 Foundation Security Review**, rather than reviewing P4 tools and screens before they exist.
+Use this prompt for the final focused adversarial verification. It is deliberately narrower than the original review: verify that the reported vulnerabilities are actually closed, investigate the remaining anomalies, and determine installation readiness.
 
-There is one particularly important attack to test: whether the application database role can invoke the `session.create` SECURITY DEFINER function directly and mint a valid session without passing the server's configured operator-credential verification. The normal login handler working correctly does not prove that database boundary is secure.
+# Focused Adversarial Verification — Miniapp Studio Host Execution Broker
 
-Here is the review prompt.
+## Mission
 
-# Adversarial Security Review — Miniapp Studio P4 Foundation
+Act as an independent principal security engineer conducting the final focused adversarial verification of the remediated Miniapp Studio Host Execution Broker.
 
-## 1. Role and objective
+The previous review produced a BLOCKED verdict. One repository-only remediation pass has now been completed.
 
-Act as a principal application-security architect, PostgreSQL security specialist, and senior Go reviewer.
+Your responsibility is to verify that the original security findings are genuinely closed through implementation and reproducible evidence, not merely that corrective code and tests exist.
 
-Conduct an adversarial, evidence-driven review of the currently implemented P4 foundation in the Miniapp Studio repository.
+**The objective is an installation decision, not another architecture review.**
 
-Your task is to determine whether the server, session authentication, three-role database security model, embedded migrations, tenant isolation, and startup configuration are safe foundations for the remaining P4 implementation.
+Governing references:
 
-This is a READ-ONLY review.
+- `PRINCIPLES.md`
+- `pg_muse.md`
+- `docs/host-exec-broker.md`
+- `docs/test-runner.md`
+- Previous adversarial report: `plans/adv_review_prompt3.md`
+- Remediation implementation and current tests.
 
-Do not modify source files, migrations, tests, configuration, dependencies, or documentation. Do not commit anything.
+## 1. Scope and restrictions
 
-The objective is to discover material security defects before the Studio tools, registry, and six screens are built on this foundation.
+Review the actual remediation diff and the relevant implementation:
 
-## 2. Established project state
+- `hostexec/policy.go`
+- `hostexec/queue.go`
+- `hostexec/exec.go`
+- `hostexec/serve.go`
+- `hostexec/stage.go`
+- `hostexec/verify.go`
+- `hostexec/*_test.go`
+- `cmd/hostexec/main.go`
+- `testrunner/`
+- `docs/host-exec-broker.md`
+- `docs/test-runner.md`
 
-P0, P1, P2, and P3 are complete and accepted.
+Review only the security boundaries affected by H1/H2, M1–M5, L1–L6 and image-digest binding.
 
-P4 foundation has been implemented, but Studio tools and the six screens are still pending.
+Do not restart the original broad review of every informational finding.
 
-### P4 implementation reported
+**Permitted:**
 
-**Database (`store/`)**
+- Source inspection and adversarial reasoning.
+- Existing regression tests.
+- Unit tests and race tests.
+- Temporary external probes under `/tmp`.
+- Focused concurrency and filesystem experiments that do not modify infrastructure.
 
-- Four embedded migrations.
-- Six tenant-scoped tables.
-- RLS enabled and forced.
-- Tenant-scoped unique constraints.
-- Sessions and operators inaccessible directly to the application role.
-- Three SECURITY DEFINER functions: lookup, create, revoke.
-- Functions owned by a dedicated non-login lookup role.
-- PUBLIC execution revoked.
-- Operator provisioning limited to pre-provisioned records and bounded expiries.
-- Regression tests for direct-access denial, invalid sessions, role attributes, RLS, tenant isolation, rollback, and idempotent provisioning.
+**Forbidden:**
 
-**Server (`server/`, `cmd/studio`)**
+- Modifying repository source, tests, documentation or configuration.
+- Installing or starting the broker.
+- Running systemd operations.
+- Docker commands or infrastructure operations.
+- PostgreSQL access, database migrations or credential access.
+- Weakening security boundaries or changing owner authorization.
 
-- Fail-closed configuration.
-- Secret loading through `*_FILE`.
-- Conflicting secret sources rejected.
-- Fly credential pair validated together.
-- Server wiring following the framework's production construction pattern.
-- Session middleware: cookie → SHA-256 token hash → lookup → tenant context.
-- Single-operator bootstrap credential from server configuration.
-- Login/logout and secure cookie flags.
-- Constant-time credential comparison.
-- Redirect validation.
-- Health and readiness endpoints.
-- Structured errors and redacted logging.
+This is verification-only. Any discovered defect must be reported, not silently repaired.
 
-**Reported verification**
+## 2. Priority verification areas
 
-- 13 store tests.
-- 13 server tests.
-- PostgreSQL-backed testing.
-- Serial database test execution.
-- Disposable restricted roles for privilege and RLS tests.
-- All work remains uncommitted.
-- Miniapp remains untouched at `73351a8`.
+### V1 — H1/H2: Build integrity and immutable staging
 
-Treat these as claims to verify, not facts to assume.
+Independently establish:
 
-## 3. Critical attack surface A — database role separation
+1. The complete `testrunner/` build context is covered by the installation-time pinning policy.
+2. Missing, altered, unexpected and symlinked files are refused.
+3. The broker stages verified bytes in owner-controlled storage.
+4. Verification is performed against the staged bytes, not merely the original workspace.
+5. Docker builds only from the staged context.
+6. An agent cannot modify the staged bytes through its permitted workspace access.
+7. The P7 marker-file attack is now refused.
+8. The 20-stage swap-consistency test genuinely proves the intended invariant.
 
-Inspect every migration and the actual PostgreSQL catalogs.
+Attempt the original attack patterns:
 
-Identify the precise roles used for:
+- Add an unpinned `package main` source file.
+- Modify an existing build input.
+- Replace a file during staging.
+- Delete or introduce unexpected files.
+- Replace source files with symlinks.
+- Attempt to manipulate the staging path.
 
-1. Migration/table ownership.
-2. SECURITY DEFINER function ownership and restricted session lookup.
-3. Application runtime access.
+**Acceptance:** No agent-controlled workspace modification can introduce executable code into a verified image build.
 
-Do not assume their names or attributes from comments. Derive their actual properties from PostgreSQL.
+### V2 — H1b/L5: Per-job repository snapshots and provenance
 
-### A1. Migration/owner role
-
-Verify:
-
-- It is used only for migrations and administrative provisioning.
-- It is not the application's runtime connection.
-- Its credentials are not exposed to normal HTTP handlers.
-- The application role cannot assume it through direct or transitive membership.
-- Runtime privileges cannot create or replace trusted functions, policies, schemas, tables, or roles.
-- Its ownership and RLS behavior are correctly understood.
-
-### A2. Lookup/function-owner role
+This is a distinct trust boundary from image building.
 
 Verify:
 
-- `NOLOGIN`.
-- `NOBYPASSRLS`.
-- It does not own the sessions table unless that is an explicitly justified and secured design.
-- It owns only the intended SECURITY DEFINER functions.
-- It has only the privileges needed by those functions.
-- It cannot be assumed by the application role.
-- It has no unexpected membership or privilege inheritance.
-- It cannot change schemas, alter protected tables, or create arbitrary executable objects.
+- Every run uses a per-job snapshot rather than the mutable live repository.
+- The snapshot is created and verified safely.
+- Tests, build and analysis operate against the same frozen snapshot.
+- The mounted snapshot is read-only.
+- Tree hash, Git HEAD, working-tree status and available package-level results are frozen in provenance.
+- The provenance record identifies precisely what was tested.
+- Subsequent repository modifications cannot alter the evidence for an earlier run.
+- Snapshot contents exclude runtime-only directories and reject unexpected symlinks.
 
-### A3. Application role
+**Important accepted limitation:**
 
-Verify:
+The broker cannot technically distinguish malicious test-gutting from legitimate development when both produce modified source trees.
 
-- `NOBYPASSRLS`.
-- Does not own protected tables.
-- Is not a member, directly or indirectly, of either privileged role.
-- Cannot `SET ROLE` to a more privileged identity.
-- Cannot read or write sessions directly.
-- Cannot read operator credential records.
-- Cannot disable RLS or alter policies.
-- Cannot modify the SECURITY DEFINER functions or their schemas.
+Do not claim this problem is solved by hashing.
 
-Query the real catalog state, including:
+The required safeguard is snapshot consistency, frozen provenance and mandatory Project Owner diff review before accepting the result.
 
-- `pg_roles`
-- `pg_auth_members`
-- `pg_class`
-- `pg_namespace`
-- `pg_proc`
-- `pg_policy`
-- function ACLs and default privileges
+Verify that this limitation is accurately represented in the documentation and acceptance workflow.
 
-Do not accept a test that checks only one role attribute when transitive membership or ownership can still provide the privilege.
+### V3 — Image digest binding
 
-## 4. Critical attack surface B — SECURITY DEFINER functions
+Verify that:
 
-Inspect all three functions individually:
+1. A successful verified build records the actual image ID.
+2. A run resolves the current image tag to its image ID.
+3. The broker refuses missing or mismatched images.
+4. A stale image or a tag pointing to a different image cannot silently execute.
+5. The digest being verified is the digest actually selected for execution.
 
-- Session lookup.
-- Session creation.
-- Session revocation.
+Assess the stated trusted-Docker-daemon assumption, but do not expand the review into hypothetical malicious-daemon attacks.
 
-For each function, record:
+### V4 — M1/M2: Queue claim integrity
 
-- Exact signature.
-- Owner.
-- `SECURITY DEFINER` status.
-- Execution grants.
-- PUBLIC privilege state.
-- Function search path.
-- Referenced schemas and objects.
-- Inputs and outputs.
-- Underlying table privileges.
-- Applicable RLS policies.
-- Failure behavior.
+Re-examine the original P3 exploit.
 
-Verify:
+Verify that the current claim implementation:
 
-1. Fixed SQL, no dynamic SQL.
-2. Fully qualified object names.
-3. Hardened `search_path`.
-4. No unsafe temporary-schema object substitution.
-5. PUBLIC execution revoked.
-6. Execution granted only to the intended role.
-7. Minimal returned data.
-8. No plaintext session tokens or credentials returned.
-9. No caller-controlled tenant identity accepted as authority.
-10. Expired and revoked sessions are never returned as active.
+- Uses directory-descriptor-relative filesystem operations.
+- Refuses symlink following.
+- Checks regular-file identity through file descriptors.
+- Enforces size limits before allocating unbounded memory.
+- Protects against FIFO blocking.
+- Verifies device/inode identity where required.
+- Prevents claimed bytes from diverging from executed bytes.
+- Does not allow poison jobs to block legitimate pending jobs.
 
-### Critical test: direct session-minting attack
+**Critical anomaly investigation:**
 
-Do not limit the review to the normal Go login handler.
+The implementation report disclosed one unexplained swap-test failure among more than 25 passes.
 
-Attempt to invoke the session creation function directly using only the application database role.
-
-Use a self-selected token hash and the information available to an ordinary application-role caller.
+Do not dismiss this as flakiness.
 
 Determine:
 
-- Can that caller create a valid session for a pre-provisioned operator?
-- Can it choose or influence the tenant or credential binding?
-- Can it obtain a usable session without successful verification of the configured operator credential?
-- Does the function independently enforce the intended issuance authorization, or merely assume the Go handler has already performed it?
+- Which invariant failed.
+- Whether the failure was in production code, test setup or test orchestration.
+- Whether it can be reproduced deterministically.
+- Whether zero outside-byte claims can be established under repeated adversarial swapping.
+- Whether the test itself is asserting the correct security property.
 
-This distinction is fundamental.
+If the anomaly remains unexplained, report it as unresolved. Do not declare the queue boundary verified merely because subsequent runs pass.
 
-A normal HTTP login test does not prove that the database function cannot be abused directly.
+### V5 — Snapshot tearing during in-place writes
 
-If a caller with only application-role database access can mint a usable authenticated session without the required credential verification, classify it as a potential foundational blocker.
+The remediation report identifies a residual risk: an in-place writer may tear a snapshot even though rename-based swaps are closed.
 
-Do not prescribe a superficial SQL check. Identify the smallest durable correction that maintains the approved three-role security model or explicitly explain why the model needs an owner decision.
+Inspect the implementation and documented quiesce protocol.
 
-## 5. Critical attack surface C — session lifecycle
+Determine:
 
-Trace session creation, authentication, lookup, and revocation through the real implementation.
+- How a changing file is detected.
+- Whether the snapshot can contain partially written content.
+- Whether the before/after hashes reliably detect concurrent modification.
+- Whether failed verification prevents execution.
+- Whether the protocol requires the writer to cooperate.
+- What happens if an agent ignores the quiesce procedure.
 
-### Token generation and storage
+Do not claim immutability if the underlying consistency property depends on cooperative behavior.
 
-Verify:
+Classify this residual accurately:
 
-- Tokens are generated with a cryptographically secure random source.
-- Entropy is sufficient for an opaque bearer credential.
-- Only SHA-256 token hashes are persisted.
-- Plaintext tokens never enter database records, audit events, application logs, or error responses.
-- Token comparison and lookup do not expose unnecessary information.
+- Acceptable with documented and enforced owner workflow.
+- Conditional on an operational quiescence gate.
+- Installation blocker if inconsistent snapshots can execute undetected.
 
-### Authentication and fixation
+Recommend the smallest necessary control. Do not invent a new snapshot architecture without evidence.
 
-Attack:
+### V6 — M3/M4: Evidence integrity and crash reconciliation
 
-- Reused pre-login session identifiers.
-- Session fixation.
-- Repeated login.
-- Concurrent login.
-- Reuse after logout.
-- Reuse after revocation.
-- Expiry races.
-- Forged cookies.
-- Malformed and oversized cookies.
-- Cookie replay from a different tenant.
+Verify that:
 
-Verify that successful authentication does not accidentally preserve an attacker-controlled prior session.
+- Authoritative result anchors reside in owner-protected `StateDir`.
+- Repository result copies are independent files, never hardlinks to authoritative anchors.
+- Tampering with repository copies is detected by `verify`.
+- The owner-side anchor cannot be modified through agent workspace access.
+- `Finish` cannot silently overwrite an existing authoritative result.
+- Concurrent or repeated job IDs cannot corrupt result history.
+- Startup sweep never overwrites terminal results.
+- Invalid or fabricated running residue is rejected or quarantined.
+- Uncertain operations remain `UNKNOWN`.
+- A recovered `UNKNOWN` job is reconciled against actual state before retry.
 
-### Cookies and HTTP behavior
+Reproduce the original P4 attack:
 
-Verify:
+- Plant a running record for an already-finished ID.
+- Plant an unexecuted ghost record.
+- Restart/sweep logic through its unit-testable entrypoint.
 
-- HttpOnly.
-- Secure.
-- SameSite policy.
-- Path and Domain scope.
-- Expiry and clearing behavior.
-- No credential values in URLs.
-- No open redirects through return parameters.
-- Correct behavior for GET versus state-changing HTTP methods.
-- CSRF protection or an explicitly justified request-origin/anti-forgery strategy for cookie-authenticated state-changing endpoints.
+Verify that prior terminal evidence remains intact and fabricated jobs do not become trusted execution records.
 
-Do not assume that using secure cookie flags alone prevents CSRF.
+### V7 — M5: Owner-side state and credential placement
 
-### Session revocation
+This is a critical trust boundary.
 
-Verify that revocation is effective on subsequent requests, not just within the current request or cached process state.
+Verify that the configuration rejects:
 
-Challenge races between authentication, expiry, and revocation.
+- `StateDir` inside the repository.
+- `EnvFile` inside the repository.
+- Paths resolving inside `/tmp`, `/dev/shm` or other agent-accessible locations.
+- Symlinked paths that resolve into agent-writable locations.
+- Unsafe ownership or world-writable state directories.
+- Version-controlled or repository-anchored credential files.
+- Unsafe lock and pin-file locations.
 
-## 6. Critical attack surface D — tenant isolation and RLS
+Most importantly, inspect the actual threat model for the installation:
 
-Enumerate every Studio table from the actual migrations.
+**Outside `RepoRoot` does not automatically mean outside agent access.**
 
-For each tenant-bearing table, verify:
+Establish the exact owner-side directories that must be protected and whether the runtime sandbox actually prevents the agent from modifying them.
 
-- `ENABLE ROW LEVEL SECURITY`.
-- `FORCE ROW LEVEL SECURITY`.
-- Correct tenant policy for SELECT, INSERT, UPDATE, and DELETE.
-- Correct tenant-scoped unique constraints and indexes.
-- No global uniqueness rule accidentally creates cross-tenant interference.
-- No missing tenant predicate in application queries.
-- No policy that accidentally permits access when tenant context is NULL or missing.
+Do not assume path validation alone creates a security boundary.
 
-Test through the actual application role:
+If protection depends on an installation-time ownership or permission condition, make it an explicit fail-closed prerequisite.
 
-1. No tenant context.
-2. Tenant A context.
-3. Tenant B context.
-4. A attempting to read B's records.
-5. A attempting to update B's records.
-6. A attempting to delete B's records.
-7. A attempting to create records owned by B.
-8. Reuse of pooled database connections across A and B.
-9. Transaction rollback after tenant context is established.
-10. Session lookup followed by tenant-scoped database operations.
-
-Verify that the session lookup boundary does not leave a privileged database session or connection state attached to subsequent requests.
-
-The framework must establish transaction-local tenant context. Check that tenant identity cannot leak through pooled connections, non-transactional query paths, or session-level settings.
-
-RLS and application ownership checks are independent layers. Prove both.
-
-## 7. Critical attack surface E — embedded migrations and database operations
-
-Inspect the embedded migration implementation and all four migrations.
+### V8 — Auto-disarm, provenance and L1–L6
 
 Verify:
 
-- Migration sources are independent of the process working directory.
-- Embedded files match the expected migration sequence.
-- Fresh-database bootstrap works.
-- Existing-database upgrades work.
-- Migration ordering is deterministic.
-- Failed migrations do not leave partially trusted schema state.
-- Fix-forward migrations actually correct the earlier privilege or RLS state.
-- Rerunning migration commands does not corrupt the database.
-- Application startup does not silently run migrations using application-role credentials.
-- Migration failure prevents readiness or startup where required.
+- Disarm occurs only after a complete, genuinely executed suite run meets its acceptance conditions.
+- `disarm.json` is first-wins and cannot be overwritten by an agent.
+- Git HEAD and dirty state are recorded when available.
+- Package counts and build identity are preserved.
+- Git-unavailable conditions are represented honestly.
+- The owner-side provenance is authoritative.
+- A repeat run cannot silently replace earlier acceptance evidence.
+- Re-arm remains owner-only.
+- Trailing JSON data and duplicate keys are rejected.
+- Pretty-printed jobs and ordinary trailing newlines work.
+- Quarantine names cannot overwrite prior records.
+- Indeterminate operations use `UNKNOWN`.
+- Toolchain paths are passed from broker configuration, not hardcoded to one workstation.
+- Existing approved operations remain bounded by the same fixed argv policy.
 
-Use a disposable PostgreSQL 19 database.
+## 3. Mandatory regression verification
 
-Run a PostgreSQL 17 compatibility spot-check for the selected MPG target.
+Run the existing regression tests and inspect whether they actually reproduce the former attacks.
 
-Do not use the owner's development database or persistent production resources.
+Minimum required evidence:
 
-## 8. Critical attack surface F — fail-closed server startup and configuration
+| Attack                                | Required outcome                      |
+| ------------------------------------- | ------------------------------------- |
+| P7 unpinned source injection          | Refused                               |
+| Build-context modification            | Refused                               |
+| Build-stage race                      | No attacker-controlled bytes execute  |
+| P3 queue symlink-swap                 | Zero outside-byte claims              |
+| FIFO swap                             | No blocking or broker wedge           |
+| Oversized queue file                  | Rejected without unbounded allocation |
+| Existing terminal result during sweep | Preserved                             |
+| Fabricated running residue            | Not trusted                           |
+| Workspace result tampering            | Detected against owner anchor         |
+| In-repo/agent-accessible StateDir     | Configuration refused                 |
+| In-repo/agent-accessible EnvFile      | Configuration refused                 |
+| Image tag mismatch                    | Execution refused                     |
+| Ambiguous execution result            | UNKNOWN                               |
 
-Inspect the complete startup path, not just the config parser.
+Run applicable:
 
-Challenge:
+- `gofmt`
+- `go vet ./...`
+- `go build ./...`
+- Full serial test suite.
+- Race tests on `hostexec` and `testrunner`.
+- Focused reproduction probes.
 
-- Missing credentials.
-- Empty secrets.
-- Malformed configuration.
-- Conflicting environment and `*_FILE` sources.
-- Unreadable secret files.
-- Unexpected credential combinations.
-- Missing Fly runtime tokens.
-- Invalid database configuration.
-- Connection failures.
-- Migration failures.
-- Partial service initialization.
-- Startup after a required dependency becomes unavailable.
+Report exact pass, fail and skip counts.
 
-Verify that the server validates required configuration and secrets before opening the listening socket.
+A passing unit test is not sufficient where a direct filesystem or concurrency attack can independently test the claimed invariant.
 
-There must be no degraded mode that silently turns an authentication or authorization failure into anonymous access.
+## 4. Finding classification
 
-Check that health and readiness have distinct semantics and expose no credentials, internal database details, or privileged configuration.
+Use these categories:
 
-Inspect error and logging paths for secret disclosure, including errors produced by third-party libraries and PostgreSQL drivers.
+- **BLOCKER:** Demonstrated ability to execute untrusted code through an authorized operation, bypass authorization, modify authoritative state, access protected secrets or forge trusted acceptance evidence.
+- **HIGH:** Significant security-boundary weakness requiring correction before installation.
+- **MEDIUM:** Contained risk with explicit operational controls or a bounded correction.
+- **LOW:** Robustness or maintainability defect without meaningful privilege or integrity impact.
+- **ACCEPTED RESIDUAL:** Risk explicitly understood and accepted within the documented threat model.
 
-Do not echo raw configuration values when reporting multiple configuration errors.
+Do not elevate every theoretical concern into a blocker.
 
-## 9. Critical attack surface G — framework integration
+Do not downgrade a demonstrated exploit merely because a test normally passes.
 
-Inspect the actual server construction and database wiring.
+## 5. Final decision
 
-Verify the intended sequence:
+Choose exactly one verdict:
 
-`configuration → files → policy → database pool → registry → executors → runtime.Service → HTTP server`
+1. **READY FOR INSTALLATION** — all material security invariants have reproducible evidence; residual risks are understood and bounded.
+2. **READY WITH EXPLICIT OWNER ACCEPTANCE** — no demonstrated privilege-boundary failure remains, but one clearly scoped operational residual requires owner acceptance.
+3. **BLOCKED** — an actual exploit, unresolved critical anomaly or untrusted execution/evidence path remains.
 
-Check:
+The unexplained P3 failure must be resolved or explicitly classified with evidence.
 
-- Fail-closed pre-auth behavior.
-- Correct use of public framework APIs.
-- Correct Class A executor registration.
-- No private framework imports or unsafe internal shortcuts.
-- Correct transaction-local tenant context.
-- Correct pool and connection budget configuration.
-- Correct separation between migration and application roles.
-- Health/readiness reflect the actual initialized dependencies.
+The in-place snapshot-writing risk must have a defensible consistency guarantee or a concrete operational gate.
 
-The subsequent tools and screens have not yet been implemented. Do not invent their behavior or grade missing P4 work as a failure of this foundation review.
+The owner-side evidence and state directories must be demonstrably outside agent write access.
 
-Identify integration contracts that the remaining P4 tools must preserve.
+## 6. Final report
 
-## 10. Test execution and evidence requirements
+Produce a concise, evidence-rich report containing:
 
-Run the applicable checks when the environment permits:
+1. Executive verdict.
+2. Original H1/H2/M1–M5/L1–L6 status.
+3. Verification results for V1–V8.
+4. P3 anomaly investigation and reproducibility findings.
+5. Snapshot consistency analysis.
+6. Owner-side state and credential boundary evidence.
+7. Exact test results and environmental skips.
+8. Remaining accepted residuals.
+9. Whether one-time broker installation is authorized for consideration.
 
-```
-gofmt -l .
-go vet ./...
-go build ./...
-go test -p 1 ./...
-go test -race ./...
-```
+Do not perform installation, start the broker, or execute Docker, PostgreSQL or systemd operations.
 
-Run PostgreSQL-backed tests against disposable PostgreSQL 19.
+Do not commission another broad review after this one. Any remaining finding must be tied to concrete evidence and a specific effect on the installation decision.
 
-Run PostgreSQL 17 compatibility tests where practical.
+## Governing principle
 
-Use disposable roles and random credentials. Never introduce hardcoded database passwords into source or tests.
+We are not seeking mathematical proof that software can never fail.
 
-For every test, distinguish:
+We are establishing sufficient, reproducible evidence that the broker enforces its intended security boundary under the threat model we actually have.
 
-- Executed and passed.
-- Executed and failed.
-- Skipped.
-- Blocked by environment.
-- Not applicable.
+The goal is to finish this verification, make an informed installation decision and return to building Miniapp Studio.
 
-Do not call a skipped test green.
-
-Do not rely exclusively on fakes for privilege, RLS, function ownership, or session bootstrap claims. Those require actual PostgreSQL evidence.
-
-Inspect existing tests and add no code: this is read-only review. You may run scratch probes against disposable databases outside the repository, but do not alter repository files.
-
-## 11. Root-cause standard
-
-For every finding:
-
-1. Identify exact source file and line, migration, function, policy, or catalog evidence.
-2. Reproduce the exploit or failure.
-3. Trace the complete execution path.
-4. Identify the underlying root cause.
-5. Identify the violated invariant.
-6. Propose the smallest durable correction.
-7. Specify regression tests that fail before and pass after.
-
-Reject symptom patches, privilege broadening, `BYPASSRLS`, direct session-table access, tenant IDs from browsers, and Studio-only workarounds for framework defects.
-
-Do not recommend unnecessary abstractions or a redesign when a focused correction preserves the approved architecture.
-
-## 12. Review boundaries
-
-This review covers only the implemented P4 foundation:
-
-- `store/`
-- Embedded migrations
-- Session functions and role grants
-- `server/`
-- `cmd/studio`
-- Configuration and startup wiring
-- Authentication and session middleware
-- Health/readiness
-- Structured errors and redacted logging
-
-Do not review unimplemented Studio tools or six screens as if they already exist.
-
-Do not implement anything.
-
-Do not modify:
-
-- `plans/plan4.md`
-- `plans/plan5.1.md`
-- `plans/plan6.md`
-- The consolidated governing implementation plan
-- Miniapp repository or its pinned SHA
-- Dependencies or deployment infrastructure
-
-Do not begin P5.
-
-Do not enable external writes or bypass G-01.
-
-Keep the review and all scratch testing uncommitted.
-
-## 13. Approval criteria
-
-The owner uses this principle:
-
-**Approve if there are no foundational or structural blockers.**
-
-Classify findings:
-
-**BLOCKER**
-
-- Application role can bypass authentication and mint a valid session.
-- Cross-tenant reads or writes are possible.
-- RLS can be bypassed through role membership, table ownership, missing policies, or connection-pool leakage.
-- SECURITY DEFINER functions can be hijacked or used to cross privilege boundaries.
-- Session revocation or expiry is not reliably enforced.
-- Server can start in an unsafe unauthenticated or improperly configured state.
-- Secrets leak through responses, logs, browser data, or database records.
-- The actual runtime transaction boundary fails to preserve tenant identity.
-
-**MAJOR**\
-A meaningful weakness that can be contained without violating a foundational security guarantee. Must have an owner, correction, and regression test. It does not automatically stop unrelated implementation.
-
-**MINOR**\
-Maintainability, test breadth, documentation, or non-critical hardening. Record and defer where appropriate.
-
-**IMPROVEMENT**\
-Optional enhancement. Do not use it to delay implementation.
-
-A finding is not a blocker merely because a design could be more elegant.
-
-## 14. Required report
-
-### A. Executive verdict
-
-Choose exactly one:
-
-- `APPROVE P4 FOUNDATION`
-- `BLOCK P4 FOUNDATION`
-
-Explain the decision in evidence-based terms.
-
-### B. Security boundary diagram
-
-Show the actual path:
-
-`Browser → session middleware → session lookup → server-derived tenant → runtime/database context → RLS-protected store`
-
-Show the privilege boundaries and function owners.
-
-### C. Role and function scorecard
-
-| Object/role/function | Actual privileges/owner | Verified invariant | Attack result | Verdict |
-| -------------------- | ----------------------- | ------------------ | ------------- | ------- |
-
-Include all three roles and all three SECURITY DEFINER functions.
-
-### D. Findings register
-
-For each finding:
-
-- ID and severity.
-- Exact source/migration/catalog location.
-- Reproduction steps.
-- Root cause.
-- Impact.
-- Durable correction.
-- Named regression test.
-- Whether it blocks P4 continuation.
-
-### E. Test evidence
-
-List exact commands, PostgreSQL versions, role identities, exit codes, and results.
-
-Clearly distinguish prior reported evidence from tests independently executed during this review.
-
-### F. Remaining P4 implementation contract
-
-List only invariants that Studio tools, registry, and screens must preserve when implemented.
-
-### G. Final decision
-
-Apply the owner's approval standard.
-
-If no foundational or structural blockers exist, approve the P4 foundation and recommend continuing immediately with Studio tools and registry.
-
-Do not request another general architecture review.
-
-## Final instruction
-
-The goal is to protect the security foundation, not create an endless review process.
-
-Be adversarial about real privilege and tenant-boundary failures. Be disciplined about evidence. Do not inflate minor defects into blockers.
-
-A clean review should close the P4 foundation security checkpoint and let implementation proceed.
-
-### **My particular concern**
-
-Pay special attention to the **direct&#x20;**`session.create`**&#x20;function invocation test**. The database must not silently assume that because the normal Go login handler checks the operator credential, every caller of the function has also passed that check. That's the most important attack to rule out before the remaining P4 tools are built.
-
-After this foundation review, the next adversarial review should be the integrated P4 review **after tools and all six screens exist**, not another review of this same foundation.
+**My expectation:** one focused verification pass. If the material invariants hold and the two disclosed residuals are safely bounded, we install. No reopening already-settled architecture decisions.

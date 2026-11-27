@@ -3,14 +3,17 @@ package store
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
-	"net/url"
-	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/PithomLabs/miniapp-studio/dbenv"
+	"github.com/PithomLabs/miniapp-studio/migratedb"
 )
 
 //go:embed migrations/*.sql
@@ -32,14 +35,17 @@ const AppRoleName = "studio_app"
 // Migrate applies pending Studio migrations over ownerDSN. It refuses to run
 // unless the framework schema is present at MinFrameworkVersion (clean) and
 // the application role exists. Migration state lives in MigrationsTable, so
-// framework and Studio versioning never collide.
-func Migrate(ctx context.Context, ownerDSN string) error {
-	pool, err := pgxpool.New(ctx, ownerDSN)
+// framework and Studio versioning never collide. Execution runs through the
+// bounded migratedb adapter (never the stock driver); ctx is the overall
+// deadline parent (dev init passes 5m; deadline-less callers get adapter
+// defaults), and pol binds the endpoint + pins TLS.
+func Migrate(ctx context.Context, ownerDSN string, pol dbenv.EndpointPolicy) error {
+	pool, err := dbenv.Pool(ctx, ownerDSN, pol)
 	if err != nil {
 		return fmt.Errorf("store: migrate connect: %w", err)
 	}
 	defer pool.Close()
-	version, dirty, err := frameworkVersion(ctx, pool)
+	version, dirty, err := FrameworkVersion(ctx, pool)
 	if err != nil {
 		return fmt.Errorf("store: migrate: framework schema check: %w", err)
 	}
@@ -58,31 +64,44 @@ func Migrate(ctx context.Context, ownerDSN string) error {
 	if !hasAppRole {
 		return fmt.Errorf("store: migrate: role %q missing (run provision first)", AppRoleName)
 	}
-	return migrateTo(ownerDSN, nil)
+	return migrateTo(ctx, ownerDSN, pol, nil)
 }
 
 // migrateTo migrates to a target version (nil means latest). Tests use it to
 // stage databases at older versions; production always migrates to latest.
-func migrateTo(ownerDSN string, target *uint) error {
+// The database driver is the bounded migratedb adapter, constructed here
+// (never scheme-resolved stock), so every operation inherits deadlines,
+// pinned TLS, and instrumentation.
+func migrateTo(ctx context.Context, ownerDSN string, pol dbenv.EndpointPolicy, target *uint) error {
 	src, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
 		return fmt.Errorf("store: migrate source: %w", err)
 	}
-	dsn, err := withMigrationsTable(ownerDSN)
+	poolCfg, err := dbenv.PoolConfig(ownerDSN, pol)
 	if err != nil {
 		return err
 	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, dsn)
+	sink, phases := migratedb.CaptureSink(12)
+	drv, err := migratedb.Open(ctx, migratedb.Config{
+		ConnConfig: *poolCfg.ConnConfig,
+		Table:      MigrationsTable,
+		Sink:       sink,
+	})
 	if err != nil {
+		return fmt.Errorf("store: migrate driver: %w (phases: %s)", err, phases())
+	}
+	m, err := migrate.NewWithInstance("iofs", src, "migratedb", drv)
+	if err != nil {
+		_ = drv.Close()
 		return fmt.Errorf("store: migrate instance: %w", err)
 	}
 	defer func() { _, _ = m.Close() }()
 	if target == nil {
 		if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-			return fmt.Errorf("store: migrate up: %w", err)
+			return fmt.Errorf("%w (phases: %s)", diagnoseMigrateErr(m, "up", err), phases())
 		}
 	} else if err := m.Migrate(*target); err != nil && err != migrate.ErrNoChange {
-		return fmt.Errorf("store: migrate to v%d: %w", *target, err)
+		return fmt.Errorf("%w (phases: %s)", diagnoseMigrateErr(m, fmt.Sprintf("to v%d", *target), err), phases())
 	}
 	if _, _, err := m.Version(); err != nil {
 		return fmt.Errorf("store: migrate version: %w", err)
@@ -90,27 +109,28 @@ func migrateTo(ownerDSN string, target *uint) error {
 	return nil
 }
 
-func frameworkVersion(ctx context.Context, pool *pgxpool.Pool) (uint, bool, error) {
+// FrameworkVersion reads the applied framework schema version. It
+// reports version 0 (not an error) when the framework table does not
+// exist yet — that database was never migrated.
+func FrameworkVersion(ctx context.Context, pool *pgxpool.Pool) (uint, bool, error) {
 	var version uint
 	var dirty bool
 	err := pool.QueryRow(ctx, `SELECT version, dirty FROM public.schema_migrations`).Scan(&version, &dirty)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return 0, false, nil
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
 		return 0, false, fmt.Errorf("read framework schema version: %w", err)
 	}
 	return version, dirty, nil
 }
 
-func withMigrationsTable(dsn string) (string, error) {
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		return "", fmt.Errorf("store: parse DSN: %w", err)
-	}
-	query := parsed.Query()
-	query.Set("x-migrations-table", MigrationsTable)
-	parsed.RawQuery = query.Encode()
-	// pgx/v5 migrate driver expects a postgres-compatible URL scheme.
-	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
-		return "", fmt.Errorf("store: DSN scheme must be postgres")
-	}
-	return strings.Replace(parsed.String(), "postgres://", "pgx5://", 1), nil
-}
+// NOTE (prompt30): withMigrationsTable retired with the stock-driver path.
+// migrateTo now constructs the bounded migratedb adapter in Go (table name
+// via Config, no URL scheme mapping). The scheme-rewrite regression moved to
+// dbenv.pgx5URL coverage, which still serves file-source callers in transition
+// (removed entirely once ApplyFrameworkBaseline migrates below).

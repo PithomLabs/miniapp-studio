@@ -1,0 +1,36 @@
+# Miniapp Studio host execution broker (systemd user unit template).
+# The owner installs this ONCE; the agent can never install, start, or
+# modify it from the sandbox. Adjust the three marked paths, then:
+#   cp hostexec.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hostexec
+# Verify with a read-only version job before any deployment job.
+[Unit]
+Description=Miniapp Studio host execution broker
+# No ordering on the system docker unit (different managers); the
+# broker preflights the daemon at startup and exits nonzero when it
+# is unreachable, so restart brings it back healthy.
+
+[Service]
+Type=simple
+# ADJUST: hostexec binary location.
+ExecStart=%h/.local/bin/hostexec serve --config %h/.config/hostexec/config.json
+Restart=on-failure
+RestartSec=5
+# Hardening: the broker needs the queue dir, its state dir, and the
+# docker socket. Everything else is locked down.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# ADJUST: queue dir (inside the repo) and broker state dir.
+ReadWritePaths=%h/Documents/go/miniapp-studio/.agent-jobs %h/.config/hostexec
+# The broker and its docker child need the unix socket only.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=default.target

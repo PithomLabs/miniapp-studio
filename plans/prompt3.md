@@ -1,285 +1,321 @@
-Yes. **An adversarial review is worthwhile before P2**, because P1 establishes the specification's trust boundary. The most important claim to challenge is that writes are structurally unrepresentable—not merely rejected by a few validator tests.
+Use this prompt with the Muse coding agent. It authorizes one adversarial review and one bounded remediation pass, without authorizing broker installation or infrastructure operations.
 
-I would make this a single, read-only review with a strict approval threshold. No more review cycles for optional improvements.
+# Adversarial Security Review — Miniapp Studio Host Execution Broker
 
-# Adversarial Code Review — Miniapp Studio P1 Specification and Validator
+## Mission
 
-## Role
+Act as an independent principal security engineer conducting an adversarial code review of the newly implemented Miniapp Studio Host Execution Broker.
 
-Act as a principal Go architect and application-security reviewer. Conduct an adversarial, evidence-driven review of the implemented P1 `spec/` package in the Miniapp Studio repository.
+Your task is to determine whether an untrusted coding agent can exploit the broker to gain unintended host privileges, execute unauthorized Docker operations, access secrets, bypass authorization, or corrupt execution evidence.
 
-Your job is to determine whether P1 is structurally sound enough to become the foundation for P2 (generic runner and renderer).
+The broker is a privileged host-side security boundary. A vulnerability here can compromise the developer workstation and undermine the entire agent-execution architecture.
 
-Do not act as a feature developer. Do not modify files, implement fixes, change dependencies, or commit anything. This is a read-only review.
+Be skeptical. Do not accept implementation claims, comments, documentation, or passing unit tests as proof of security.
 
-## 1. Context and established implementation claims
+**Governing principles:** PRINCIPLES.md, pg_muse.md, local-first engineering, reality-first engineering, least privilege, explicit owner authorization, and fail-closed execution.
 
-P1 is reported implemented and verified:
+## 1. Scope and restrictions
 
-- `spec/types.go`: versioned MiniappSpec and closed v1 vocabularies.
-- `spec/validate.go`: strict decoding, 13-code error taxonomy, deterministic collection order.
-- `spec/hash.go`: canonical JSON and SHA-256 content hash, excluding the hash field itself.
-- Fifteen fixtures under `spec/testdata/valid_invoice_review.json` and associated test data.
-- Eleven tests, including deliberate rejection of an unapproved send.
-- Standard-library-only package; `go list -m all` reports no framework reliance.
-- `gofmt`, `go vet`, `go test`, and `go test -race` reportedly pass.
+Review the actual implementation, including:
 
-Most importantly, v1 is deliberately read-only:
+- `hostexec/`
+- `cmd/hostexec/`
+- Systemd service unit and installation configuration
+- Job and result queue implementation
+- Operation schemas and validation
+- Build-input pinning and verification
+- Auto-disarm and owner-only re-arm
+- `testrunner/` integration
+- Documentation and security assumptions
+- All relevant tests
 
-- No write step type exists.
-- Capability method/effect combinations accept only GET/read.
-- `policies.confirmation.externalWrites` must equal `disabled`.
-- The validator rejects anything outside these constraints.
+Trace the complete execution path from agent-authored job to Docker operation and returned result.
 
-The schema also establishes `app.owner` as required and includes per-tenant uniqueness rules. Persistence-level tenant scoping is deferred to P2 and later designs.
+**Do not:**
 
-P0 is not complete. The PostgreSQL-backed framework validation and Studio import spike remain blocked by Docker socket permissions. Docker Postgres is the designated testing path once daemon access is available.
+- Install or start the broker.
+- Execute Docker infrastructure operations.
+- Create, attach, disconnect or remove Docker networks.
+- Launch containers.
+- Access, print or modify credentials.
+- Weaken sandbox restrictions.
+- Broaden the operation allowlist.
+- Change the authorization model.
+- Delete or weaken existing tests to obtain a green result.
 
-## 2. Review objective
+Repository inspection, source-level analysis, unit tests, race tests and fake-Docker testing are permitted.
 
-Determine whether the P1 implementation actually enforces its stated invariants, including at hostile-input boundaries.
+## 2. Threat model
 
-Do not accept comments, documentation, type names, or happy-path tests as proof. Trace the actual code and tests.
+Assume:
 
-### A. Structural read-only guarantee
+1. The coding agent is untrusted input, even when acting with legitimate project authorization.
+2. The agent can create, modify and submit job files within its permitted workspace.
+3. The agent may deliberately construct malformed, adversarial or replayed requests.
+4. The agent may race filesystem operations and submit concurrent jobs.
+5. The agent may crash the broker, restart the host or interrupt an operation.
+6. The agent may attempt to exploit Docker CLI arguments, mounts, environment variables, image selection or network configuration.
+7. The agent may attempt to tamper with results, build pins, configuration or deployment state.
+8. The Docker daemon and host are outside the agent's trust boundary.
+9. Owner authorization applies only to the explicitly approved PostgreSQL test-runner workflow, not unrestricted future infrastructure operations.
 
-Attempt to defeat the claim that v1 cannot represent external writes.
+Do not assume benign agent behavior.
+
+## 3. Required adversarial investigations
+
+### A. Privilege escalation and operation confinement
+
+Determine whether any job can cause:
+
+- Arbitrary command or shell execution.
+- Execution of an unlisted Docker command.
+- Arbitrary image selection or unapproved image substitution.
+- Arbitrary host filesystem mounts.
+- Access to the Docker socket from the runner.
+- Host networking or privileged container execution.
+- Access to unrelated containers, networks, volumes or host resources.
+- Modification or deletion of unrelated host resources.
+
+Inspect every operation, not merely the public API.
+
+Verify that the broker constructs its own argument arrays and fixed resource parameters. Caller-controlled values must never become unrestricted command arguments.
+
+Challenge the banned-token filter: it is supplementary validation, never the primary security boundary.
+
+### B. Job queue and filesystem attacks
+
+Test:
+
+- Symlink and hardlink attacks.
+- Path traversal and directory replacement.
+- TOCTOU races between validation and execution.
+- FIFO, device-file and unexpected file-type inputs.
+- Malformed JSON, oversized requests and duplicate fields.
+- Unknown fields, unknown operations and invalid types.
+- Duplicate IDs and replay attempts.
+- Concurrent submissions and simultaneous workers.
+- Unauthorized modification of running jobs or completed results.
+- Atomic state-transition failures and interrupted writes.
+
+Check directory ownership, permissions, file creation modes, locking and atomic rename semantics.
+
+Determine whether a malicious agent can replace or forge a result after the broker has executed an operation.
+
+### C. Authorization and deployment auto-disarm
+
+This is a critical area.
+
+The initial owner authorization is limited to the approved PostgreSQL test-runner deployment sequence.
+
+Verify:
+
+- Every deployment operation is restricted to the approved resources and exact workflow.
+- Deployment operations cannot be repurposed with caller-supplied parameters.
+- Deployment capabilities automatically disarm after the first genuinely successful full suite run.
+- Disarm state survives broker restarts.
+- The agent cannot forge a successful test result to trigger disarm.
+- The agent cannot restore or re-arm deployment permissions.
+- Owner-only re-arm is enforced at the actual trusted execution boundary.
+- Replayed, stale or interrupted jobs cannot bypass the authorization state.
+- A successful partial run is never treated as a successful full suite.
+- Repeatable read-only or non-deployment operations retain only their explicitly intended scope.
+
+Examine the distinction between an operation being technically available and an operation being authorized.
+
+### D. Docker security boundary
+
+Inspect every constructed Docker invocation.
+
+Verify:
+
+- No `--privileged`.
+- No host networking.
+- No Docker socket mount.
+- No unexpected published ports.
+- Only exact allowlisted network and container names.
+- Only explicitly approved mounts and read-only modes.
+- No unrestricted Docker environment or option injection.
+- No ability to inspect or manipulate arbitrary host containers.
+- No accidental exposure of the database outside its approved network.
+
+The broker's Docker access is privileged. Its operation surface must therefore be smaller and more constrained than the Docker CLI itself.
+
+### E. Credential and information leakage
 
 Inspect:
 
-1. Every step type and discriminator.
-2. Every capability method and effect vocabulary.
-3. All policy and confirmation fields.
-4. Optional, omitted, zero-valued, null, and unknown fields.
-5. JSON decoding and validation order.
-6. Cross-field constraints and interactions between capabilities, workflows, and policies.
-7. Any alternate representation that could smuggle an undeclared operation into an otherwise valid specification.
+- DSN handling.
+- Environment-file paths and permissions.
+- Docker command logging.
+- Standard output and standard error capture.
+- Result serialization.
+- Error messages and crash reports.
+- Temporary files and cleanup.
+- Systemd configuration.
+- Repository, Go toolchain and module-cache mounts.
 
-Test adversarial inputs such as:
+Verify that neither credentials nor sensitive environment values appear in logs, job records, result files, process arguments or image layers.
 
-- POST, PUT, PATCH, DELETE, and other non-GET methods.
-- Write-like effect values and unknown effect values.
-- Missing or disabled confirmation fields.
-- `null`, empty strings, omitted fields, and unexpected nested objects.
-- Unknown workflow step discriminators.
-- Unknown fields in nested structures.
-- Conflicting or contradictory capability and policy declarations.
-- Extra JSON documents or trailing data.
-- Duplicate JSON object keys and case-variant field names, where applicable to the decoder.
+Do not introduce a new credential design when the existing testdb harness already provides the required least-privilege roles and isolated databases.
 
-Pay particular attention to Go JSON decoding behavior. Do not assume that `DisallowUnknownFields` alone proves complete strictness.
+### F. Crash recovery, concurrency and uncertain effects
 
-**Required conclusion:** Is a write genuinely unrepresentable in the v1 data model, or is it merely rejected by the current validator implementation? Identify the precise boundary and any residual limitation.
+Attack:
 
-Do not demand runtime enforcement that cannot exist before P2. Clearly distinguish the P1 schema/validator guarantee from future interpreter enforcement.
+- Broker termination during operation execution.
+- Host restart with jobs in `running/`.
+- Lock contention.
+- Duplicate requests.
+- Docker command timeout.
+- Partial Docker success followed by broker failure.
+- Result-write failure.
+- Disarm-state persistence failure.
 
-### B. Type system and schema integrity
+Determine whether every ambiguous outcome becomes `UNKNOWN` rather than falsely reporting success.
 
-Inspect whether the Go types faithfully implement the intended v1 contract.
+Ensure recovery reconciles actual Docker state before retrying uncertain operations. Never assume an interrupted request had no effect.
 
-Challenge:
+### G. Systemd and host privilege boundary
 
-- Closed vocabularies and enum handling.
-- Required versus optional fields.
-- Pointer, zero-value, nil, and default semantics.
-- Unknown-version behavior.
-- Forward-compatibility assumptions.
-- Serialization/deserialization consistency.
-- Whether invalid states can be constructed internally without passing through validation.
+Inspect the actual service unit and installation assumptions.
 
-Determine whether another developer could accidentally bypass the validator through ordinary package usage.
+Evaluate:
 
-### C. Canonical serialization and content hashing
+- Dedicated service identity and required privileges.
+- `NoNewPrivileges`.
+- Filesystem restrictions.
+- Writable-path confinement.
+- Network address-family restrictions.
+- Docker socket access.
+- Service startup and restart behavior.
+- Single-instance enforcement.
+- Configuration and pin-file ownership.
+- Protection against unauthorized unit or configuration replacement.
 
-Independently examine `spec/hash.go`.
+Identify the minimum privileges required for the broker to perform its authorized operations.
 
-Verify:
+Do not blindly recommend security settings that prevent required functionality. Demonstrate the actual boundary and any residual privilege.
 
-1. The hash is computed from the intended canonical representation.
-2. The hash field is excluded without excluding unrelated data.
-3. Semantically identical valid specs produce the same hash.
-4. Meaningfully different specs produce different canonical inputs.
-5. Hash calculation does not mutate the original spec unexpectedly.
-6. Map ordering, optional fields, empty collections, numeric representations, and string handling do not introduce unintended instability.
-7. Validation and hash computation cannot disagree about which representation is authoritative.
-8. Repeated operations and independent processes produce stable results.
-
-Challenge the canonicalization implementation rather than simply confirming that it calls `json.Marshal` and SHA-256.
-
-Identify which determinism guarantees are actually established and which are merely assumed.
-
-### D. Validator correctness and error taxonomy
-
-Verify the complete validation pipeline:
-
-- Strict decode before semantic validation.
-- Version and vocabulary checks.
-- Required-field validation.
-- Cross-field consistency.
-- Capability and policy constraints.
-- Collection traversal and deterministic ordering.
-- Stable error codes and useful field paths.
-- No panic or silent acceptance on malformed input.
-
-Inspect whether multiple invalid fields produce deterministic error ordering and whether error messages leak sensitive content.
-
-Verify that the claimed 13-code taxonomy is actually closed and consistently used.
-
-### E. Tenant ownership foundation
-
-Review the P1 schema and types only; do not pretend persistence isolation is already implemented.
+### H. Build-input pinning and supply-chain integrity
 
 Verify:
 
-- `app.owner` cannot be absent or silently defaulted.
-- Ownership is represented unambiguously.
-- Per-tenant uniqueness rules include the tenant boundary rather than accidentally imposing global uniqueness.
-- No conflicting owner representation can create ambiguity.
-- Hashing and versioning preserve ownership semantics.
-- The schema provides a sound foundation for later server-derived tenant enforcement.
+- Every executable build input is covered by the intended hash pin.
+- The pin cannot be regenerated or modified by the untrusted agent to bless tampered files.
+- Build and runtime verify the same inputs.
+- Containerfile and runner source drift causes refusal.
+- The pin helper cannot silently approve arbitrary changes.
+- Image identity and digest are recorded.
+- The broker cannot be tricked into executing an unexpected image.
 
-Record the distinction between schema readiness and actual database/RLS isolation.
+Identify the trusted source of the initial pins and who is permitted to update them.
 
-### F. Dependency and architectural boundary
+## 4. Mandatory adversarial tests
 
-Verify the standard-library-only claim independently.
+Where feasible, implement or run tests demonstrating:
 
-Inspect imports, module dependencies, package references, and build/test dependency closure.
+1. Arbitrary command injection is rejected.
+2. Unknown operations and fields are rejected.
+3. Arbitrary mounts and network modes are rejected.
+4. Symlink and path traversal attacks fail.
+5. Duplicate and replayed jobs cannot create unintended effects.
+6. Concurrent operations cannot violate single-flight guarantees.
+7. Forged suite results cannot trigger auto-disarm.
+8. Agent-controlled inputs cannot re-arm deployment operations.
+9. Tampered build pins cause refusal.
+10. Interrupted operations produce honest `UNKNOWN` states.
+11. The broker does not leak secrets into results.
+12. The service cannot be manipulated into executing outside its allowlist.
 
-Determine whether `spec/` depends on Miniapp runtime, framework internals, external providers, Fly, Sprite APIs, or other implementation-specific packages.
+Use fake Docker or deterministic doubles for adversarial operation tests. Never attack the live host Docker daemon during this review.
 
-The P1 specification package must remain independent of the execution framework.
+Tests must demonstrate the security invariant, not simply assert that a helper returned an expected error.
 
-### G. Tests and evidence quality
+## 5. Finding classification
 
-Inspect every relevant test, not just the test count.
+Classify every confirmed finding:
 
-Determine whether tests assert the invariant or merely exercise a code path.
-
-Check for:
-
-- Positive and negative fixtures.
-- Every write-like input being rejected.
-- Unknown enum and discriminator rejection.
-- Malformed JSON handling.
-- Duplicate keys and trailing-document behavior where applicable.
-- Hash stability and mutation safety.
-- Deterministic error ordering.
-- Tenant-owner and uniqueness validation.
-- Regression coverage for any identified historical failure.
-
-Run the applicable P1 checks if the environment permits:
-
-```
-gofmt -l .
-go vet ./...
-go test ./...
-go test -race ./...
-go list -m all
-```
-
-Do not run unrelated infrastructure tests just to make the review appear comprehensive. P1 is standard-library-only; PostgreSQL is not a prerequisite for its unit suite.
-
-Report exactly which commands were executed, their exit status, and any environmental limitation. Do not repeat reported test results as independently verified results.
-
-## 3. Root-cause standard
-
-For every defect:
-
-1. Trace the failure to its actual root cause.
-2. Identify the architectural boundary where the invariant should be enforced.
-3. Explain the exploit or failure scenario.
-4. Specify a durable correction.
-5. Name regression tests that would fail before the correction and pass afterward.
-
-Reject superficial fixes that only add another validator check while leaving an invalid state representable or a bypass available elsewhere.
-
-Do not recommend an abstraction or dependency merely because it would make the implementation more elaborate.
-
-## 4. Review boundaries
-
-This review is limited to P1 and its immediate architectural contract.
-
-Do not:
-
-- Implement P2.
-- Change the Miniapp framework.
-- Change the provisional framework pin.
-- Modify the implementation plan or frozen plans.
-- Add write support.
-- Add managed-agent integrations.
-- Introduce DBOS or a workflow engine.
-- Redesign multi-tenancy.
-- Reopen settled architecture decisions without concrete contradictory evidence.
-- Treat P0's outstanding PostgreSQL gate as a P1 defect.
-
-Identify future P2 requirements where relevant, but do not turn them into P1 blockers.
-
-## 5. Approval standard
-
-The owner has explicitly established this principle:
-
-**Approve if there are no foundational or structural blockers.**
-
-Apply it strictly.
-
-A finding is a blocker only when there is evidence of a material defect in a foundational invariant, such as:
-
-- A write operation can be represented or accepted in v1.
-- Malformed or adversarial input can bypass required validation.
-- Hash identity is unstable, incomplete, or inconsistent with the actual spec.
-- Tenant ownership can be omitted or misrepresented.
-- The specification package is coupled to framework implementation in violation of its boundary.
-- A critical claimed invariant is not actually tested or enforced.
-
-Classify findings as:
-
-- **BLOCKER:** foundational or structural defect. P1 cannot safely become the basis for P2 until corrected.
-- **MAJOR:** meaningful weakness, but not a reason to stop P2 if it can be safely contained and tracked.
-- **MINOR:** polish, maintainability, or optional improvement.
-- **PASS:** invariant verified with code and test evidence.
-
-Do not inflate optional improvements into blockers. Do not demand perfection.
-
-## 6. Required report
-
-Return:
-
-### Executive verdict
-
-`APPROVE P1` or `BLOCK P1`, followed by a concise evidence-based explanation.
-
-### Invariant scorecard
-
-| Invariant | Verdict | Code evidence | Test evidence | Remaining limitation |
-| --------- | ------- | ------------- | ------------- | -------------------- |
-
-Cover read-only structure, type/schema integrity, canonical hashing, validator correctness, tenant ownership, dependency isolation, and regression coverage.
-
-### Findings
+- **Critical:** arbitrary host execution, privilege escalation, unrestricted Docker access, credential compromise, or authorization bypass with severe consequences.
+- **High:** ability to escape operation confinement, bypass deployment approval, forge successful execution, or manipulate privileged state.
+- **Medium:** meaningful isolation, recovery, auditability or integrity weakness.
+- **Low:** limited security weakness or operational defect with contained consequences.
+- **Informational:** hardening opportunity without a demonstrated vulnerability.
 
 For each finding provide:
 
-- Severity.
-- Exact file and line.
-- Reproducible failure or attack scenario.
-- Root cause.
-- Durable correction.
-- Required regression test.
-- Whether it blocks P2.
+1. Identifier and severity.
+2. Exact affected files and code locations.
+3. Attack preconditions.
+4. Concrete attack sequence.
+5. Demonstrated impact.
+6. Evidence or reproducing test.
+7. Root cause.
+8. Smallest durable correction.
 
-### Verification record
+Separate demonstrated vulnerabilities from theoretical concerns.
 
-List commands actually executed, results, and limitations.
+Do not manufacture findings simply to make the review appear comprehensive.
 
-### P2 handoff
+## 6. Bounded remediation pass
 
-List only the requirements that P2 must preserve when it introduces interpretation and execution. Explicitly preserve the v1 read-only boundary and ensure runtime enforcement cannot weaken it.
+After completing the adversarial review:
 
-### Final decision
+- Fix confirmed Critical, High and genuine structural defects within the existing broker authorization and architecture.
+- Fix confirmed Medium defects when the correction is local and does not expand infrastructure or authority.
+- Add regression tests demonstrating each corrected invariant.
+- Preserve existing tests and contract behavior.
+- Avoid cosmetic refactoring, speculative abstractions and unrelated repairs.
+- Do not silently broaden permissions or operation capabilities.
 
-State clearly whether implementation should proceed.
+If a finding requires changing the approved security boundary, obtaining additional host privileges, broadening owner authorization, or changing the fundamental architecture, stop and report it for an owner decision.
 
-If no foundational or structural blockers remain, approve P1 and recommend starting P2 after the separate P0 dependency gate passes. Do not request another general review cycle.
+Perform only one remediation pass. Do not create an endless review/remediation loop.
 
-**My recommendation:** run this once. The most valuable adversarial checks are JSON decoder edge cases, write-shaped input bypasses, canonical hash stability, and whether ownership constraints are genuinely tenant-scoped. A clean result means P1 is accepted; P0 remains a separate gate before P2.
+## 7. Final verification
+
+Run the applicable checks:
+
+- gofmt
+- go vet
+- go build
+- full serial test suite
+- broker unit tests
+- race tests
+- adversarial tests
+- fake-Docker end-to-end tests
+
+Report exact commands, exit codes, pass/fail/skip counts and environmental limitations.
+
+A test that skipped is not a passing test. Clearly distinguish source-level verification, fake-Docker verification and actual host-side verification.
+
+Do not install the broker or execute any Docker infrastructure operation.
+
+## 8. Final deliverable
+
+Produce a concise but evidence-rich adversarial review report containing:
+
+1. Executive verdict: ACCEPTABLE, ACCEPTABLE WITH RESIDUAL RISKS, or BLOCKED.
+2. Confirmed findings ordered by severity.
+3. Exploitability and impact.
+4. Remediation performed and regression tests added.
+5. Unresolved risks and owner decisions required.
+6. Final test evidence.
+7. Whether the broker is ready for one-time installation.
+
+The final verdict must answer this question:
+
+**Can an adversarial coding agent, using only the permissions and workspace access it actually possesses, cause the privileged host broker to perform an operation outside the explicitly authorized PostgreSQL test-runner workflow?**
+
+Do not answer based on intention or documentation. Answer from inspected code, adversarial tests and demonstrated enforcement.
+
+## Governing rule
+
+The objective is not to prove that the broker works under friendly conditions.
+
+The objective is to determine whether it remains safe when the agent behaves maliciously, the filesystem behaves unexpectedly, processes crash, and execution results are ambiguous.
+
+Reality-first engineering: demonstrate the security boundary before trusting it with host privileges.
+
+No broker installation, service startup, Docker network changes, container attachment or runner execution is authorized by this review.
+
+**Expected outcome:** one serious adversarial review, one bounded remediation pass, then an installation decision. No endless review cycle.

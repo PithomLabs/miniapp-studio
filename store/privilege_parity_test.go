@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/PithomLabs/miniapp-studio/testdb"
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 )
 
 // TestPrivilegeParity pins U5.12 invariant 5: the test role carries
@@ -15,12 +15,12 @@ import (
 //
 // Each entry asserts has_privilege(test) == has_privilege(live) ==
 // want. A new table granted to the app role but missing from
-// testdb.GrantTestPrivileges breaks parity on the test side; a grant
+// dbenv.GrantTestPrivileges breaks parity on the test side; a grant
 // the mirror invents beyond the app role breaks it on the live side.
 func TestPrivilegeParity(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx := context.Background()
-	live, test := AppRoleName, testdb.TestRoleName
+	live, test := AppRoleName, dbenv.TestRoleName
 	check := func(kind, object, priv string, want bool) {
 		t.Helper()
 		var fn string
@@ -52,7 +52,7 @@ func TestPrivilegeParity(t *testing.T) {
 		"conversations", "messages", "builds", "turns", "questions",
 		"commands", "events", "conversation_stream", "artifacts", "approvals",
 		"artifact_blobs", "artifact_verifications", "artifact_test_runs",
-		"checkpoints"}
+		"checkpoints", "sprite_lifecycle_receipts"}
 	for _, table := range studioTables {
 		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
 			check("table", "studio."+table, priv, true)

@@ -7,12 +7,12 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/PithomLabs/miniapp-studio/testdb"
-	"github.com/PithomLabs/miniapp/testkit"
 )
 
 // scratchDB creates a disposable database and returns its owner DSN. The
@@ -37,7 +37,11 @@ func scratchDB(t *testing.T, prefix string) string {
 		t.Fatalf("create scratch db: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
+		// Bounded like everything else: a hung DROP must fail the
+		// cleanup loudly, never stall the binary to the go timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, _ = admin.Exec(ctx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
 		admin.Close()
 	})
 	parsed, err := url.Parse(base)
@@ -163,14 +167,14 @@ func TestCascadeStaysInTenant(t *testing.T) {
 func TestMigrationRefusesCrossTenantData(t *testing.T) {
 	dsn := scratchDB(t, "studio_f3")
 	ctx := context.Background()
-	testkit.MigrateUp(t, dsn)
+	testdb.FrameworkBaseline(t, dsn)
 	owner, err := NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer owner.Close()
 	six := uint(6)
-	if err := migrateTo(dsn, &six); err != nil {
+	if err := migrateTo(ctx, dsn, testdb.Policy(t), &six); err != nil {
 		t.Fatalf("migrate to v6: %v", err)
 	}
 	for _, stmt := range []string{
@@ -183,7 +187,7 @@ func TestMigrationRefusesCrossTenantData(t *testing.T) {
 			t.Fatalf("seed violation: %v", err)
 		}
 	}
-	err = Migrate(ctx, dsn)
+	err = Migrate(ctx, dsn, testdb.Policy(t))
 	if err == nil {
 		t.Fatal("migration accepted cross-tenant data, want refusal")
 	}

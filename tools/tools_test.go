@@ -50,7 +50,7 @@ func setupToolsDeps(t *testing.T, deps Deps) harness {
 	ctx := context.Background()
 	// U5.12: isolated run database; the live role is never touched.
 	dsn := testdb.RunDSN(t)
-	if err := store.Migrate(ctx, dsn); err != nil {
+	if err := store.Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	owner, err := pgxpool.New(ctx, dsn)

@@ -2,11 +2,21 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// tenantResetTimeout bounds the AfterRelease RESET. The statement is
+// trivial and local; anything slower is a dead transport masquerading
+// as a live connection, and waiting on it once hung pool teardown and
+// acquisition across two live packages (prompt30 S7). Failure destroys
+// the connection — never waits, never reuses.
+const tenantResetTimeout = 10 * time.Second
 
 // TenantResetHook returns a pgxpool AfterRelease hook that clears
 // transaction-external tenant state before a connection rejoins the idle
@@ -18,8 +28,9 @@ import (
 // borrower already released). PrepareConn was considered and rejected: its
 // richer semantics add nothing here, and its failure modes surface inside
 // user queries. BeforeAcquire is deprecated upstream and excluded.
-// AfterRelease provides no context; RESET is a trivial local statement, so
-// a background context is correct, and any error destroys the connection.
+// AfterRelease provides no context, so the hook derives its own short
+// deadline (an unbounded RESET hung teardown live); any error or timeout
+// destroys the connection, and the failure is logged without secrets.
 //
 // This hook is narrow by design: it resets exactly app.tenant_id. It does
 // not DISCARD ALL and must never grow into a general sanitizer —
@@ -27,8 +38,14 @@ import (
 // way to establish tenant context.
 func TenantResetHook() func(*pgx.Conn) bool {
 	return func(c *pgx.Conn) bool {
-		_, err := c.Exec(context.Background(), `RESET app.tenant_id`)
-		return err == nil
+		ctx, cancel := context.WithTimeout(context.Background(), tenantResetTimeout)
+		defer cancel()
+		if _, err := c.Exec(ctx, `RESET app.tenant_id`); err != nil {
+			slog.Warn("tenant reset failed; destroying connection",
+				"timeout", errors.Is(err, context.DeadlineExceeded))
+			return false
+		}
+		return true
 	}
 }
 

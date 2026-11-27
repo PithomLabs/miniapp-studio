@@ -14,7 +14,7 @@ import (
 func testStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	dsn := testdb.RunDSN(t)
-	if err := store.Migrate(context.Background(), dsn); err != nil {
+	if err := store.Migrate(context.Background(), dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)

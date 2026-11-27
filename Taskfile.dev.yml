@@ -1,0 +1,127 @@
+# Development database contract: repeatable, declarative entry points
+# for bind, setup, diagnose, bootstrap, migrate, test, reset, and
+# fingerprint. Every task delegates to `studio dev` verbs (Go, tested);
+# this file carries only ordering, file requirements, and documentation.
+#
+# File handoff (no chat, no clipboards, no transcription): `task dev:bind`
+# writes the branch binding (repo-local, gitignored, identities only)
+# and the DSN (outside the repo, mode-0600, agent-unreadable). Tasks
+# consume both by path; credentials never appear in task output.
+version: "3"
+
+vars:
+  STUDIO: go run ./cmd/studio
+  # Overridable per run, e.g. task dev:setup DSN_FILE=/elsewhere/dev.dsn
+  METADATA_FILE: ./dev-neon.json
+  DSN_FILE: $HOME/.config/miniapp-studio/dev.dsn
+  NEON_PROJECT: miniapp-studio-dev
+  NEON_BRANCH: dev
+
+tasks:
+  bind:
+    desc: Bind the Neon branch by name (writes binding + DSN files; zero transcription; DSN never overwritten)
+    cmds:
+      - "{{.STUDIO}} dev bind --project {{.NEON_PROJECT}} --branch {{.NEON_BRANCH}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  setup:
+    desc: Neon preflight for the dev branch (metadata, endpoint binding, TLS, live version; provisions nothing)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev setup --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  diag-roles:
+    desc: Record studio_lookup capability booleans to ./dev-diag-roles.json (secret-free diagnostic)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev diag-roles --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} > ./dev-diag-roles.json"
+
+  doctor:
+    desc: Diagnose toolchain, endpoint, database, and migrations (fails loudly on any violated invariant)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev doctor --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  fingerprint:
+    desc: Print the machine-readable environment record (JSON, no credentials)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev fingerprint --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  parity-capture:
+    desc: Capture the fingerprint to ./dev-parity.local.json (gitignored) for cross-environment comparison
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev fingerprint --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} > ./dev-parity.local.json"
+
+  init:
+    desc: Provision + migrate one fresh run database on the bound Neon branch
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev init --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  migrate:
+    desc: Run pending Studio migrations via the existing studio migrate path (owner-managed databases; needs STUDIO_OWNER_DATABASE_URL or --dsn-file)
+    cmds:
+      - "{{.STUDIO}} migrate {{.CLI_ARGS}}"
+
+  test:
+    desc: "Run database-touching test packages serially (bind files required). Extra flags pass through: -- -v, -- -run NAME, -- -timeout 5m."
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev test --db-only --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  test-full:
+    desc: Run the complete test suite serially through the bound branch
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev test --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  reset:
+    desc: "Drop stale run databases. Preview: task dev:reset -- --dry-run. Execute: task dev:reset -- --yes"
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev reset --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  bootstrap:
+    desc: "Full clean setup chain for a fresh environment: setup preflight, doctor, init, tests"
+    cmds:
+      - task: setup
+      - task: doctor
+      - task: init
+      - task: test

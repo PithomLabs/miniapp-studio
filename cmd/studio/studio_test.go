@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 	"github.com/PithomLabs/miniapp-studio/server"
 	"github.com/PithomLabs/miniapp-studio/store"
 	"github.com/PithomLabs/miniapp-studio/testdb"
@@ -33,10 +34,10 @@ func provisionDB(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Migrate(ctx, dsn); err != nil {
+	if err := store.Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+	if err := dbenv.GrantTestPrivileges(ctx, owner); err != nil {
 		t.Fatalf("GrantTestPrivileges: %v", err)
 	}
 	clean := func() {

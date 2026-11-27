@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 	"github.com/PithomLabs/miniapp-studio/fly"
 	"github.com/PithomLabs/miniapp-studio/store"
 	"github.com/PithomLabs/miniapp-studio/testdb"
-	"github.com/PithomLabs/miniapp/testkit"
 )
 
 const (
@@ -57,18 +57,18 @@ func testServerOn(t *testing.T, dsn string, sprites fly.SpriteManager, conns fly
 func bootServerOn(t *testing.T, dsn string, sprites fly.SpriteManager, conns fly.ConnectorManager, truncate bool, mutate func(*Config)) (*Server, Config) {
 	t.Helper()
 	ctx := context.Background()
-	testkit.MigrateUp(t, dsn)
+	testdb.FrameworkBaseline(t, dsn)
 	owner, err := store.NewPool(ctx, dsn, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(owner.Close)
-	if err := store.Migrate(ctx, dsn); err != nil {
+	if err := store.Migrate(ctx, dsn, testdb.Policy(t)); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 	// Idempotent: the run database already carries the mirror, and
 	// scratch F12 databases gain it right after their own migrate.
-	if err := testdb.GrantTestPrivileges(ctx, owner); err != nil {
+	if err := dbenv.GrantTestPrivileges(ctx, owner); err != nil {
 		t.Fatalf("GrantTestPrivileges: %v", err)
 	}
 	if truncate {
