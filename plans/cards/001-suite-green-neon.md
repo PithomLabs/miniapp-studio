@@ -134,3 +134,25 @@ hunt the grantor; absent with by-OID TRUE → environment anomaly with proof); P
 with `--- PASS` lines captured. If P3 shows PUBLIC, the repair slice is forward 000027 (SET ROLE
 studio_lookup → REVOKE PUBLIC → restore intended grants → RESET ROLE) plus an adapter-hardening decision;
 000027 is deliberately NOT in this slice — the confirm run must observe the hole, not the repair.
+
+**Confirm run (2026-11-27 ~23:35 +08:00, store 467.9s). Mechanism CLOSED.** Raw ACL on all four migration
+functions: `{=X/studio_lookup,studio_lookup=X/studio_lookup}` — explicit PUBLIC EXECUTE, grantor
+studio_lookup — with regprocedure OID == catalog OID and by-text == by-OID == true (no shadow, no resolution
+bug). P1: SetRepair cleanup green (no `probe_transfer_fn` in any later dump — PASS line still to be pasted
+for the record). P2 corrected: line-260 stays red, but the PUBLIC source moved from the probe leftover to the
+migration functions themselves — the cleanup fix worked and exposed the real grants. P3 CONFIRMED exactly.
+Framework migrations audited clean (no ACL writes, no SET ROLE, no roles). `OWNER TO` targets only the five
+function statements — tables stay migrator-owned, which is exactly why table grants stick and function grants
+vanish: the ownership boundary is the divergence line. Final mechanism: the migrator, a mere INHERIT FALSE
+member of studio_lookup, passes ownership CHECKS (clean v26, zero errors) but its function-ACL writes take no
+effect; only the 000001 SET capability was ever real and no migration used it.
+**Repair slice (this commit):** forward `000027_function_acl_repair` (SET ROLE studio_lookup → REVOKE PUBLIC
+on all four → restore intended grants incl. migrating-user EXECUTE on operator_upsert → self-asserting
+DO-block postconditions → RESET ROLE; down removes the grants but never reopens PUBLIC); `GrantTestPrivileges`
+function grants moved onto a dedicated SET ROLE connection with double RESET. No new tests needed — the gate
+itself is the green-after proof (post-000027, session_* test-side TRUE requires the mirror fix to stick, and
+000027's postconditions fail the migration loudly on any regression). Repo-local gates green (gofmt/vet/unit
+426/306/0). **Prediction for the green run: all seven PASS**, incl. the cycle test exercising 000027's
+down/up round-trip (v27→v15→v27). Follow-up card warranted (not blocking): per-file adapter atomicity
+(BEGIN/COMMIT) for the partial-application class — 000027's assertions already close the silent-ineffectiveness
+class this incident exposed.

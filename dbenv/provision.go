@@ -222,14 +222,47 @@ func GrantTestPrivileges(ctx context.Context, pool *pgxpool.Pool) error {
 		// 000010 grants the version table unqualified; resolve identically.
 		`GRANT SELECT ON studio_schema_migrations TO ` + role,
 		`GRANT USAGE, SELECT ON SEQUENCE app.audit_events_id_seq TO ` + role,
-		`GRANT EXECUTE ON FUNCTION studio.session_lookup(TEXT) TO ` + role,
-		`GRANT EXECUTE ON FUNCTION studio.session_create(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ) TO ` + role,
-		`GRANT EXECUTE ON FUNCTION studio.session_revoke(TEXT) TO ` + role,
 	}
 	for _, s := range stmts {
 		if _, err := pool.Exec(ctx, s); err != nil {
 			return fmt.Errorf("dbenv: grant: %w", err)
 		}
+	}
+	// Function grants ride a dedicated owner-role connection (Card
+	// 001): grants on studio_lookup-owned functions issued by the
+	// migrator-as-member take no effect, so they run AS studio_lookup.
+	return grantTestFunctionExec(ctx, pool, role)
+}
+
+// grantTestFunctionExec mirrors the session-function EXECUTE set onto
+// the test role AS studio_lookup over one dedicated connection, with
+// RESET guaranteed before the connection returns to the pool. A
+// pooled SET ROLE without guaranteed RESET would leak the owner role
+// into the next checkout; the double RESET (explicit + deferred
+// backstop) closes that.
+func grantTestFunctionExec(ctx context.Context, pool *pgxpool.Pool, role string) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("dbenv: acquire for function grants: %w", err)
+	}
+	defer conn.Release()
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `RESET ROLE`)
+	}()
+	if _, err := conn.Exec(ctx, `SET ROLE studio_lookup`); err != nil {
+		return fmt.Errorf("dbenv: set role for function grants: %w", err)
+	}
+	for _, s := range []string{
+		`GRANT EXECUTE ON FUNCTION studio.session_lookup(TEXT) TO ` + role,
+		`GRANT EXECUTE ON FUNCTION studio.session_create(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ) TO ` + role,
+		`GRANT EXECUTE ON FUNCTION studio.session_revoke(TEXT) TO ` + role,
+	} {
+		if _, err := conn.Exec(ctx, s); err != nil {
+			return fmt.Errorf("dbenv: grant: %w", err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `RESET ROLE`); err != nil {
+		return fmt.Errorf("dbenv: reset role after function grants: %w", err)
 	}
 	return nil
 }
