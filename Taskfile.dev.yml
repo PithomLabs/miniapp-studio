@@ -25,12 +25,75 @@ vars:
   SERVE_APP_PASSWORD_FILE: $HOME/.config/miniapp-studio/app-role.pw
   SERVE_TOKEN_FILE: $HOME/.config/miniapp-studio/dev-login-token.txt
   SERVE_MARKER_FILE: ./dev-serve.json
+  # Broker KEK (all overridable per run). TENANT/PROVIDER/REFRESH_FILE
+  # have no defaults: broker verbs refuse to guess them.
+  KEK_FILE: $HOME/.config/miniapp-studio/broker-kek
+  TENANT: ''
+  PROVIDER: ''
+  REFRESH_FILE: ''
 
 tasks:
   bind:
     desc: Bind the Neon branch by name (writes binding + DSN files; zero transcription; DSN never overwritten)
     cmds:
       - "{{.STUDIO}} dev bind --project {{.NEON_PROJECT}} --branch {{.NEON_BRANCH}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  secrets-validate:
+    desc: Validate a dotenv file against the secrets registry (names only; ENV_FILE overridable; extras via --)
+    cmds:
+      - '{{.STUDIO}} dev secrets-validate --env-file {{.ENV_FILE | default "./dev.env"}} {{.CLI_ARGS}}'
+
+  secrets-plan:
+    desc: Show the sync plan (key names in scope) for an environment from a dotenv file; local only, no Fly calls (ENV_FILE=./dev.env ENV=dev overridable)
+    cmds:
+      - "{{.STUDIO}} dev secrets-plan --env-file {{.ENV_FILE | default \"./dev.env\"}} --env {{.ENV | default \"dev\"}}"
+
+  broker-init-kek:
+    desc: Generate the broker KEK file (0600, refuses overwrite; KEK_FILE overridable)
+    cmds:
+      - "{{.STUDIO}} dev broker-init-kek --kek-file {{.KEK_FILE}}"
+
+  broker-enroll:
+    desc: Enroll a tenant/provider refresh token (sealed at rest; REFRESH_FILE must be 0600; TENANT/PROVIDER/REFRESH_FILE/KEK_FILE overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.PROVIDER}}"
+        msg: "Pass PROVIDER=<id> (no default)"
+      - sh: test -f "{{.REFRESH_FILE}}"
+        msg: "Pass REFRESH_FILE=<0600 path holding the refresh token>"
+    cmds:
+      - "{{.STUDIO}} dev broker-enroll --kek-file {{.KEK_FILE}} --tenant {{.TENANT}} --provider {{.PROVIDER}} --refresh-file {{.REFRESH_FILE}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  broker-revoke:
+    desc: Revoke a tenant/provider credential (future mints fail; TENANT/PROVIDER overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.PROVIDER}}"
+        msg: "Pass PROVIDER=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev broker-revoke --tenant {{.TENANT}} --provider {{.PROVIDER}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  broker-leases:
+    desc: List lease metadata for a tenant (scope only; tokens are never stored or shown; TENANT overridable; filter via -- --provider P)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev broker-leases --tenant {{.TENANT}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
 
   setup:
     desc: Neon preflight for the dev branch (metadata, endpoint binding, TLS, live version; provisions nothing)

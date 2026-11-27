@@ -72,10 +72,10 @@ func TestAppRoleNameLiteral(t *testing.T) {
 
 // TestNoProdDbenvImport proves the shared environment contract stays
 // out of production request paths. Only the test harness itself, the
-// `studio dev` command surface (dev.go, bind.go, devserve.go), the
-// migrate boundary-enforcement point (migrate.go), and tests may import
-// dbenv: it carries the fixed test credential and branch provisioning
-// primitives.
+// `studio dev` command surface (dev.go, bind.go, devserve.go,
+// devbroker.go), the migrate boundary-enforcement point (migrate.go),
+// and tests may import dbenv: it carries the fixed test credential
+// and branch provisioning primitives.
 func TestNoProdDbenvImport(t *testing.T) {
 	needle := "miniapp-studio/dbenv\""
 	root := repoRoot(t)
@@ -112,6 +112,14 @@ func TestNoProdDbenvImport(t *testing.T) {
 		// machinery stays the only path. Main package, unimportable
 		// from request paths, same as above.
 		if rel == filepath.Join("cmd", "studio", "migrate.go") {
+			return
+		}
+		// devbroker.go is the same `studio dev` command surface
+		// (owner-terminal broker-init-kek/enroll/revoke/leases);
+		// identical justification as devserve.go. It touches only
+		// policy, production-guard, and pinned-pool symbols — no
+		// test credential, no provisioning.
+		if rel == filepath.Join("cmd", "studio", "devbroker.go") {
 			return
 		}
 		// store/migrate.go: endpoint policy + pinned pools only, enforced

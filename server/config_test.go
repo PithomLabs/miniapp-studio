@@ -75,6 +75,30 @@ func TestLoadRejectsBothSecretSources(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesWorldReadableCredentialFile(t *testing.T) {
+	validEnv(t)
+	loose := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(loose, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MINIAPP_KEYS_FILE", loose)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "MINIAPP_KEYS_FILE") {
+		t.Fatalf("0644 keys file err = %v, want refusal naming the key", err)
+	}
+}
+
+func TestLoadRejectsBothSourcesForPlainVars(t *testing.T) {
+	validEnv(t)
+	// STUDIO_LISTEN previously read env directly and silently ignored
+	// its _FILE sibling; the unified loader refuses the ambiguity.
+	t.Setenv("STUDIO_LISTEN_FILE", writeTemp(t, "listen", "127.0.0.1:9090"))
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "STUDIO_LISTEN") {
+		t.Fatalf("env+file LISTEN err = %v, want refusal naming the key", err)
+	}
+}
+
 func TestLoadOperatorsValidation(t *testing.T) {
 	cases := map[string]string{
 		"malformed":     `{oops`,

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/PithomLabs/miniapp-studio/secrets"
 )
 
 // Operator binds one workspace to its login credential and its server-side
@@ -48,26 +50,34 @@ type Config struct {
 
 var rxHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Load reads and validates configuration from the environment, collecting
-// every problem before failing so operators fix configuration in one pass.
-// Required: STUDIO_OPERATORS_FILE, MINIAPP_KEYS_FILE, MINIAPP_GRANTS_FILE,
-// database DSNs (or *_FILE variants). Optional: Studio Fly identity as a
-// pair (STUDIO_FLY_ORG + STUDIO_SPRITES_TOKEN_FILE).
+// Load reads and validates configuration through the secrets registry,
+// collecting every problem before failing so operators fix configuration
+// in one pass. Required: STUDIO_OPERATORS_FILE, MINIAPP_KEYS_FILE,
+// MINIAPP_GRANTS_FILE, database DSNs (or *_FILE variants). Optional:
+// Studio Fly identity as a pair (STUDIO_FLY_ORG +
+// STUDIO_SPRITES_TOKEN_FILE). Secret files must be owner-only.
 func Load() (Config, error) {
 	var problems []string
 	fail := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
 	var cfg Config
+	reg := secrets.StudioRegistry()
+	load := func(name string) (string, error) { return reg.Load(name, secrets.LoadOpts{}) }
 
-	cfg.ListenAddr = envOr("STUDIO_LISTEN", "127.0.0.1:8080")
-	if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
-		fail("STUDIO_LISTEN %q is not host:port: %v", cfg.ListenAddr, err)
+	listen, listenErr := load("STUDIO_LISTEN")
+	if listenErr != nil {
+		fail("%v", listenErr)
+	} else {
+		cfg.ListenAddr = listen
+		if _, _, err := net.SplitHostPort(cfg.ListenAddr); err != nil {
+			fail("STUDIO_LISTEN %q is not host:port: %v", cfg.ListenAddr, err)
+		}
 	}
 
-	dbURL, dbErr := envOrFile("STUDIO_DATABASE_URL")
+	dbURL, dbErr := load("STUDIO_DATABASE_URL")
 	cfg.DatabaseURL = mustSecret(dbURL, dbErr, "STUDIO_DATABASE_URL", fail)
-	ownerURL, ownerErr := envOrFile("STUDIO_OWNER_DATABASE_URL")
+	ownerURL, ownerErr := load("STUDIO_OWNER_DATABASE_URL")
 	cfg.OwnerDatabaseURL = mustSecret(ownerURL, ownerErr, "STUDIO_OWNER_DATABASE_URL", fail)
 	for _, pair := range [][2]string{{cfg.DatabaseURL, "STUDIO_DATABASE_URL"}, {cfg.OwnerDatabaseURL, "STUDIO_OWNER_DATABASE_URL"}} {
 		if pair[0] == "" {
@@ -79,8 +89,10 @@ func Load() (Config, error) {
 		}
 	}
 
-	opsPath := strings.TrimSpace(os.Getenv("STUDIO_OPERATORS_FILE"))
-	if opsPath == "" {
+	opsPath, opsPathErr := load("STUDIO_OPERATORS_FILE")
+	if opsPathErr != nil {
+		fail("%v", opsPathErr)
+	} else if opsPath == "" {
 		fail("STUDIO_OPERATORS_FILE is required")
 	} else {
 		ops, err := loadOperators(opsPath)
@@ -91,36 +103,65 @@ func Load() (Config, error) {
 		}
 	}
 
-	cfg.FrameworkKeys = strings.TrimSpace(os.Getenv("MINIAPP_KEYS_FILE"))
-	cfg.FrameworkGrants = strings.TrimSpace(os.Getenv("MINIAPP_GRANTS_FILE"))
-	for _, pair := range [][2]string{{cfg.FrameworkKeys, "MINIAPP_KEYS_FILE"}, {cfg.FrameworkGrants, "MINIAPP_GRANTS_FILE"}} {
-		if pair[0] == "" {
-			fail("%s is required", pair[1])
-		} else if _, err := os.Stat(pair[0]); err != nil {
-			fail("%s unreadable: %v", pair[1], err)
+	mustFile := func(name string, dest *string) {
+		path, err := load(name)
+		if err != nil {
+			fail("%v", err)
+			return
 		}
+		if path == "" {
+			fail("%s is required", name)
+			return
+		}
+		if err := secrets.CheckFileMode(path); err != nil {
+			fail("%s %v", name, err)
+			return
+		}
+		*dest = path
 	}
+	mustFile("MINIAPP_KEYS_FILE", &cfg.FrameworkKeys)
+	mustFile("MINIAPP_GRANTS_FILE", &cfg.FrameworkGrants)
 
-	cfg.FlyOrg = strings.TrimSpace(os.Getenv("STUDIO_FLY_ORG"))
-	cfg.SpritesTokenFile = strings.TrimSpace(os.Getenv("STUDIO_SPRITES_TOKEN_FILE"))
-	orgSecret, orgErr := envOrFile("STUDIO_GATEWAY_ORG_SECRET")
+	flyOrg, flyOrgErr := load("STUDIO_FLY_ORG")
+	if flyOrgErr != nil {
+		fail("%v", flyOrgErr)
+	} else {
+		cfg.FlyOrg = flyOrg
+	}
+	tokenFile, tokenErr := load("STUDIO_SPRITES_TOKEN_FILE")
+	if tokenErr != nil {
+		fail("%v", tokenErr)
+	} else {
+		cfg.SpritesTokenFile = tokenFile
+	}
+	orgSecret, orgErr := load("STUDIO_GATEWAY_ORG_SECRET")
 	if orgErr != nil {
 		fail("%v", orgErr)
 	}
 	cfg.GatewayOrgSecret = orgSecret
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("STUDIO_SENDER"))) {
-	case "1", "true", "yes":
-		cfg.SenderEnabled = true
+	sender, senderErr := load("STUDIO_SENDER")
+	if senderErr != nil {
+		fail("%v", senderErr)
+	} else {
+		switch strings.ToLower(strings.TrimSpace(sender)) {
+		case "1", "true", "yes":
+			cfg.SenderEnabled = true
+		}
 	}
 	if (cfg.FlyOrg == "") != (cfg.SpritesTokenFile == "") {
 		fail("STUDIO_FLY_ORG and STUDIO_SPRITES_TOKEN_FILE must be set together or not at all")
 	}
 	if cfg.SpritesTokenFile != "" {
-		if _, err := os.Stat(cfg.SpritesTokenFile); err != nil {
-			fail("STUDIO_SPRITES_TOKEN_FILE unreadable: %v", err)
+		if err := secrets.CheckFileMode(cfg.SpritesTokenFile); err != nil {
+			fail("STUDIO_SPRITES_TOKEN_FILE %v", err)
 		}
 	}
-	cfg.WorkspaceRoot = strings.TrimSpace(os.Getenv("STUDIO_WORKSPACE_ROOT"))
+	workspace, workspaceErr := load("STUDIO_WORKSPACE_ROOT")
+	if workspaceErr != nil {
+		fail("%v", workspaceErr)
+	} else {
+		cfg.WorkspaceRoot = workspace
+	}
 	if cfg.WorkspaceRoot != "" {
 		if !filepath.IsAbs(cfg.WorkspaceRoot) {
 			fail("STUDIO_WORKSPACE_ROOT must be an absolute path")
@@ -137,24 +178,6 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// envOrFile resolves NAME from the environment, NAME_FILE from a file, or
-// reports a conflict when both are set. Values are trimmed; absence yields "".
-func envOrFile(name string) (value string, err error) {
-	direct := strings.TrimSpace(os.Getenv(name))
-	path := strings.TrimSpace(os.Getenv(name + "_FILE"))
-	if direct != "" && path != "" {
-		return "", fmt.Errorf("set exactly one of %s and %s_FILE", name, name)
-	}
-	if path != "" {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read %s_FILE: %w", name, err)
-		}
-		return strings.TrimSpace(string(raw)), nil
-	}
-	return direct, nil
-}
-
 func mustSecret(value string, err error, name string, fail func(string, ...any)) string {
 	if err != nil {
 		fail("%v", err)
@@ -166,14 +189,10 @@ func mustSecret(value string, err error, name string, fail func(string, ...any))
 	return value
 }
 
-func envOr(name, def string) string {
-	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-		return v
-	}
-	return def
-}
-
 func loadOperators(path string) ([]Operator, error) {
+	if err := secrets.CheckFileMode(path); err != nil {
+		return nil, err
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

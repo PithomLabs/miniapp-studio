@@ -39,7 +39,7 @@ import (
 
 func runDev(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve> [flags]")
+		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases> [flags]")
 	}
 	switch args[0] {
 	case "bind":
@@ -62,8 +62,20 @@ func runDev(args []string) error {
 		return runDevServeInit(args[1:])
 	case "serve":
 		return runDevServe(args[1:])
+	case "secrets-validate":
+		return runDevSecretsValidate(args[1:], os.Stdout)
+	case "secrets-plan":
+		return runDevSecretsPlan(args[1:], os.Stdout)
+	case "broker-init-kek":
+		return runDevBrokerInitKEK(args[1:], os.Stdout)
+	case "broker-enroll":
+		return runDevBrokerEnroll(args[1:], os.Stdout)
+	case "broker-revoke":
+		return runDevBrokerRevoke(args[1:], os.Stdout)
+	case "broker-leases":
+		return runDevBrokerLeases(args[1:], os.Stdout)
 	default:
-		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve)", args[0])
+		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases)", args[0])
 	}
 }
 

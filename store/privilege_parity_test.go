@@ -9,7 +9,7 @@ import (
 
 // TestPrivilegeParity pins U5.12 invariant 5: the test role carries
 // EXACTLY the live role's privilege set on run databases — derived
-// from the migration grant audit (000002/3/5/6/9/10/11/12/13/14), and
+// from the migration grant audit (000002/3/5/6/9/10/11/12/13/14/28), and
 // enforced here against the live catalog so any future migration that
 // widens studio_app without widening the mirror fails loudly.
 //
@@ -52,7 +52,8 @@ func TestPrivilegeParity(t *testing.T) {
 		"conversations", "messages", "builds", "turns", "questions",
 		"commands", "events", "conversation_stream", "artifacts", "approvals",
 		"artifact_blobs", "artifact_verifications", "artifact_test_runs",
-		"checkpoints", "sprite_lifecycle_receipts"}
+		"checkpoints", "sprite_lifecycle_receipts",
+		"broker_credentials", "broker_leases"}
 	for _, table := range studioTables {
 		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
 			check("table", "studio."+table, priv, true)

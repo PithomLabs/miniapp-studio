@@ -125,6 +125,48 @@ project/branch identity, TLS posture, migration versions). No credentials.
 Captures the fingerprint to `./dev-parity.local.json` (gitignored) for
 cross-environment comparison (local vs Sprite vs CI).
 
+## Secrets tasks
+
+### `task dev:secrets-validate`
+Validates a dotenv file against the secrets registry (strict
+`KEY=VALUE` subset; unknown keys, duplicates, empties, and `export`
+rejected) and reports every registered variable's status (names
+only — values never print). Extra secret files audit via
+`-- --check-files a,b` (must be owner-only; see
+[secrets](secrets.md)). `ENV_FILE` overrides the path (default
+`./dev.env`).
+
+### `task dev:secrets-plan`
+Shows the sync plan for one environment (`ENV`, default `dev`):
+registered keys in scope with sensitivity and rotation, and whether
+each value is present in the dotenv file. Local planning only —
+performs no Fly/network operations.
+
+## Broker tasks (tenant credentials, option A)
+
+### `task dev:broker-init-kek`
+Generates the broker KEK (32 random bytes, 64 hex chars) into a
+0600 file. Refuses to overwrite; `KEK_FILE` overridable (default
+`$HOME/.config/miniapp-studio/broker-kek`). Run once per
+environment, from the owner terminal.
+
+### `task dev:broker-enroll`
+Seals a tenant/provider refresh token into `studio_dev_ui`
+(`TENANT`, `PROVIDER`, `REFRESH_FILE` — no defaults; the refresh
+file must be 0600 and is never a flag). Prints names only.
+Re-enrollment overwrites and clears revocation (re-consent path).
+
+### `task dev:broker-revoke`
+Marks a credential revoked; future mints fail. Missing credentials
+are a typed error, not silent success.
+
+### `task dev:broker-leases`
+Lists lease metadata for a tenant (scope + lifecycle only;
+`-- --provider P` filters). Tokens are never stored, so there is
+nothing to leak. There is deliberately no mint verb: minting
+happens only inside broker process memory (see
+[broker](broker.md)).
+
 ## Serve tasks (local UI)
 
 ### `task dev:serve-init`

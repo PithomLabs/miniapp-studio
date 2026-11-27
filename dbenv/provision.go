@@ -203,6 +203,7 @@ var studioTables = []string{
 	"commands", "events", "conversation_stream", "artifacts", "approvals",
 	"artifact_blobs", "artifact_verifications", "artifact_test_runs",
 	"checkpoints", "sprite_lifecycle_receipts",
+	"broker_credentials", "broker_leases",
 }
 
 // frameworkTables mirrors the 000002 app.* DML grant set.
