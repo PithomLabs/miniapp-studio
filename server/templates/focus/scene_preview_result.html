@@ -1,0 +1,13 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Dry-run preview</h1>
+{{if .DryError}}
+<div class="card bad" role="alert"><h3>Preview failed</h3><p>{{.DryError}}</p></div>
+{{else}}
+<div class="card"><h3>Run</h3><p class="sub">Fixture <span class="mono">{{.fixture}}</span> · workflow <span class="mono">{{.workflowId}}</span> · completed: {{.completed}}</p></div>
+<div class="card"><h3>Outputs</h3><pre class="code">{{.outputs}}</pre></div>
+<div class="card"><h3>Messages</h3><ul>{{range .messages}}<li>{{.}}</li>{{end}}</ul></div>
+{{end}}
+<div class="actions"><a class="btn" href="/apps/new">Back to Create</a></div>
+</div>
+{{end}}

@@ -15,6 +15,10 @@
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--txt);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 .app{display:grid;grid-template-columns:64px minmax(0,1fr) clamp(280px,23vw,340px);height:100dvh}
+.app.nopulse{grid-template-columns:64px minmax(0,1fr)}
+.app.nopulse .pulse,.app.nopulse .pulse-edge{display:none}
+.skip{position:absolute;left:-999px;top:0;background:var(--panel2);color:var(--txt);padding:8px 14px;z-index:100;border-radius:0 0 8px 0}
+.skip:focus{left:0}
 :focus-visible{outline:1.5px solid var(--acc);outline-offset:1px}
 button{font:inherit}
 a{color:var(--acc)}
@@ -135,7 +139,8 @@ html[data-persona="ops"] .devd{display:none}
 </style>
 </head>
 <body>
-<div class="app">
+<a class="skip" href="#stage">Skip to content</a>
+<div class="app{{if .NoPulse}} nopulse{{end}}">
   <aside class="rail" aria-label="Essentials">
     <div class="rail-top">
       <div class="brand" title="Miniapp Studio">◆</div>
@@ -143,29 +148,29 @@ html[data-persona="ops"] .devd{display:none}
       <a class="rbtn{{if eq .Scene "connect"}} on{{end}}" href="/console?scene=connect{{with .Conversation}}&amp;conversation={{.id}}{{end}}" title="Connectors" aria-label="Connectors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7z"/><path d="M12 16v5"/></svg></a>
       <a class="rbtn{{if eq .Scene "evidence"}} on{{end}}" href="/console?scene=evidence{{with .Conversation}}&amp;conversation={{.id}}{{end}}" title="Evidence" aria-label="Evidence"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6l7-3z"/><path d="M9 11.5l2 2 4-4"/></svg></a>
       <a class="rbtn{{if eq .Scene "settings"}} on{{end}}" href="/console?scene=settings{{with .Conversation}}&amp;conversation={{.id}}{{end}}" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></a>
-      <button class="rbtn" id="pulseBtn" title="Pulse" aria-label="Pulse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>{{if gt .PendingApprovals 0}}<span class="rbadge" id="railBadge">{{.PendingApprovals}}</span>{{end}}</button>
+      {{if not .NoPulse}}<button class="rbtn" id="pulseBtn" title="Pulse" aria-label="Pulse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>{{if gt .PendingApprovals 0}}<span class="rbadge" id="railBadge">{{.PendingApprovals}}</span>{{end}}</button>{{end}}
     </div>
     <div class="rail-bottom">
       <div role="group" aria-label="Persona">
         <button class="pbtn on" id="pOps" title="Operate — plain language">OPS</button>
         <button class="pbtn" id="pDev" title="Inspect — full detail">DEV</button>
       </div>
-      <form id="killForm" method="post" action="/console/kill" title="Hold to stop every non-terminal build in this tenant — and only this tenant">
+      {{if .KillOpKey}}<form id="killForm" method="post" action="/console/kill" title="Hold to stop every non-terminal build in this tenant — and only this tenant">
         <input type="hidden" name="opkey" value="{{.KillOpKey}}">
         <button class="kill" id="kill" title="Hold to stop every non-terminal build in this tenant" aria-label="Hold to stop every non-terminal build in this tenant" disabled><span class="fill" id="killFill"></span><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
-      </form>
+      </form>{{end}}
     </div>
   </aside>
 
   <main class="stage">
     <header class="stagehead">
       {{if .ContextBar}}<div class="ctxbar" id="ctxbar" aria-label="Project context"><span><span class="k">project</span> {{.ContextBar.project}}</span>{{if .ContextBar.live_ok}}<span title="live worktree state"><span class="k">tree</span> <span class="mono">{{.ContextBar.live_branch}}@{{.ContextBar.live_head}}</span>{{if .ContextBar.live_dirty}} <span class="tag warn">dirty</span>{{else}} <span class="tag ok">clean</span>{{end}}</span>{{else}}<span><span class="k">branch</span> <span class="mono">{{.ContextBar.branch}}</span></span>{{end}}<span><span class="k">ckpt</span> {{.ContextBar.ckpt}}</span>{{if .ContextBar.stale}}<span class="tag warn" title="Live branch differs from the latest checkpoint">stale</span>{{end}}<span><span class="k">agent</span> {{.ContextBar.agent}}</span><span><span class="k">workspace</span> {{.ContextBar.workspace}}</span><span class="tag mut">env {{.ContextBar.env}}</span></div>{{end}}
-      <div class="spine" id="spine" aria-label="Pipeline">{{range .Spine}}<a class="sph" data-s="{{.State}}" href="{{.Href}}" title="{{.Title}}"><span class="dot"></span>{{.Label}}</a>{{end}}</div>
+      {{if .Spine}}<div class="spine" id="spine" aria-label="Pipeline">{{range .Spine}}<a class="sph" data-s="{{.State}}" href="{{.Href}}" title="{{.Title}}"{{if eq .State "active"}} aria-current="page"{{end}}><span class="dot"></span>{{.Label}}</a>{{end}}</div>{{end}}
       <div class="stagemeta" id="stageMeta"><div class="meta-l">{{.MetaLeft}}</div><div class="meta-r">{{.MetaRight}}</div></div>
       {{if .Notice}}<div class="banner" role="status" style="margin:0 0 10px">{{.Notice}}</div>{{end}}
     </header>
     <section class="stagebody" id="stage" aria-live="polite">{{template "scene" .}}</section>
-    <footer class="line">
+    {{if not .NoPulse}}<footer class="line">
       {{if .Conversation}}
       <div class="chips" id="replyChip" hidden><span class="chip" id="replyLabel"></span> <button type="button" class="chip" id="replyCancel" aria-label="Cancel reply">✕</button></div>
       <form class="lineform" id="lineForm" method="post" action="/console/line">
@@ -182,10 +187,10 @@ html[data-persona="ops"] .devd{display:none}
         <button type="submit" aria-label="Send" disabled>→</button>
       </form>
       {{end}}
-    </footer>
+    </footer>{{end}}
   </main>
 
-  <aside class="pulse" id="pulse" aria-label="Pulse">
+  {{if not .NoPulse}}<aside class="pulse" id="pulse" aria-label="Pulse">
     <div class="pulse-head">
       <h2>Pulse <span class="mono" id="pulseCount" data-count="{{len .PulseItems}}">{{len .PulseItems}} items</span></h2>
       <div class="pfilters" id="pfilters">
@@ -222,10 +227,10 @@ html[data-persona="ops"] .devd{display:none}
         <div class="tm">{{.Time}}</div>
       </div>{{else}}<div class="note">Nothing here yet. Describe something below.</div>{{end}}
     </div>
-  </aside>
+  </aside>{{end}}
 </div>
 <div class="banner" id="connBanner" hidden></div>
-<button class="pulse-edge" id="pulseEdge">Pulse{{if gt .PendingApprovals 0}} <span class="rbadge" id="edgeBadge" style="position:static">{{.PendingApprovals}}</span>{{end}}</button>
+{{if not .NoPulse}}<button class="pulse-edge" id="pulseEdge">Pulse{{if gt .PendingApprovals 0}} <span class="rbadge" id="edgeBadge" style="position:static">{{.PendingApprovals}}</span>{{end}}</button>{{end}}
 <div class="overlay" id="overlay"></div>
 <script src="/static/focus/console.js"></script>
 </body>

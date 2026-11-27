@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -31,9 +32,10 @@ func (s *Server) handleConversationsList(w http.ResponseWriter, r *http.Request)
 	if convs == nil {
 		convs = []any{}
 	}
-	renderTemplate(w, r, "conversations_list.html", map[string]any{
-		"Conversations": convs, "OpKey": key,
-	}, s.logger)
+	s.renderFocusPage(w, r, "scene_conversations.html", "conversations", nil,
+		fmt.Sprintf("Development tasks · %d shown", len(convs)), map[string]any{
+			"Conversations": convs, "OpKey": key,
+		})
 }
 
 // handleConversationsCreate opens one conversation and redirects to it.
@@ -113,11 +115,22 @@ func (s *Server) renderConversation(w http.ResponseWriter, r *http.Request, conv
 		return
 	}
 	conversation, _ := got["conversation"].(map[string]any)
-	renderTemplate(w, r, "conversation.html", map[string]any{
-		"Conversation": conversation, "Builds": shaped,
-		"Items": shapePageItems(items), "LatestSeq": int64(latest),
-		"MsgOpKey": msgKey,
-	}, s.logger)
+	questions := 0
+	for _, b := range shaped {
+		if m, ok := b.(map[string]any); ok {
+			if qs, ok := m["open_questions"].([]any); ok {
+				questions += len(qs)
+			}
+		}
+	}
+	s.renderFocusPage(w, r, "scene_conversation.html", "conversations", nil,
+		fmt.Sprintf("%s · %s", plural(len(shaped), "build"), plural(questions, "open question")), map[string]any{
+			// Thread, not Conversation: the shell reserves .Conversation
+			// for console focus (it would wrongly enable the Line).
+			"Thread": conversation, "Builds": shaped,
+			"Items": shapePageItems(items), "LatestSeq": int64(latest),
+			"MsgOpKey": msgKey,
+		})
 }
 
 // shapeBuilds prepares builds for the page: each build keeps its status
@@ -341,8 +354,9 @@ func (s *Server) renderAnswerConflict(w http.ResponseWriter, r *http.Request, bu
 	}
 	convID, _ := st["conversation_id"].(string)
 	w.WriteHeader(http.StatusConflict)
-	renderTemplate(w, r, "answer_conflict.html", map[string]any{
-		"BuildID": buildID, "ConversationID": convID,
-		"OpenQuestions": st["open_questions"],
-	}, s.logger)
+	s.renderFocusPage(w, r, "scene_answer_conflict.html", "conversations", nil,
+		"Stale answer rejected", map[string]any{
+			"BuildID": buildID, "ConversationID": convID,
+			"OpenQuestions": st["open_questions"],
+		})
 }

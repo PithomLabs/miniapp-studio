@@ -1,0 +1,13 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Activity</h1>
+<p class="sub">Tenant-scoped audit trail, newest first. This is the raw event record — incident investigation lands in B4.</p>
+{{if .events}}
+<div class="scroll"><table><thead><tr><th>Time</th><th>Tool</th><th>Action</th><th>Outcome</th></tr></thead>
+<tbody>{{range .events}}<tr><td class="mono">{{.at}}</td><td>{{.tool}}</td><td>{{.action}}</td><td>{{.outcome}}</td></tr>{{end}}</tbody></table></div>
+{{with .next_cursor}}<div class="actions"><a class="btn" href="/activity?cursor={{.}}">Older</a></div>{{end}}
+{{else}}
+<div class="card"><h3>No activity yet</h3><p class="sub">Events appear here as work happens.</p></div>
+{{end}}
+</div>
+{{end}}

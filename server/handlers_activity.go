@@ -20,5 +20,5 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		renderError(w, r, http.StatusBadGateway, "Activity unavailable.", s.logger, err.Error())
 		return
 	}
-	renderTemplate(w, r, "activity.html", res, s.logger)
+	s.renderFocusPage(w, r, "scene_activity.html", "activity", nil, "Audit trail", res)
 }

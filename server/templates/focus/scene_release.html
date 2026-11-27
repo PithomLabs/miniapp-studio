@@ -1,0 +1,40 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Release</h1>
+<p class="sub">Staging, production, and the promotion path between them. Promotion and rollback do not execute in this build — the controls below are disabled and say why.</p>
+<div class="card" id="pipeline">
+<h3>Environment pipeline</h3>
+<div class="scroll"><table><thead><tr><th>Environment</th><th>State</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>Local development</td><td><span class="tag ok">Functional</span></td><td>Workstation builds and tests.</td></tr>
+<tr><td>Engineering PR Preview</td><td><span class="tag mut">Planned</span></td><td>Per-PR reviewer environments (T3).</td></tr>
+<tr><td>Application Preview</td><td><span class="tag mut">Planned</span></td><td>Per-PR customer-facing previews (T3).</td></tr>
+<tr><td>Staging</td><td><span class="tag mut">Planned</span></td><td>Production-like verification (Phase E).</td></tr>
+<tr><td>Production</td><td><span class="tag mut">Planned</span></td><td>Live Miniapp runtimes (Phase E).</td></tr>
+</tbody></table></div>
+</div>
+<div class="card" id="candidate">
+<h3>Release candidate</h3>
+{{if .ConversationID}}
+{{if .Artifacts}}
+<p class="sub">Verified artifacts for conversation <span class="mono">{{.ConversationID}}</span>. Verification is real; promotion is not available.</p>
+<div class="scroll"><table><thead><tr><th>Digest</th><th>Verified</th><th>Tests</th><th>Decision</th></tr></thead><tbody>
+{{range .Artifacts}}<tr><td class="mono">{{.digest}}</td><td>{{if .verified}}<span class="tag ok">verified</span>{{else}}<span class="tag mut">no</span>{{end}}</td><td>{{if .latest_run_status}}<span class="tag mut">{{.latest_run_status}}</span>{{else}}<span class="tag mut">none</span>{{end}}</td><td>{{if .decision}}{{.decision}} by {{.decided_by}}{{else}}<span class="tag mut">open</span>{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{else}}
+<p class="sub">Conversation <span class="mono">{{.ConversationID}}</span> has no artifacts yet.</p>
+{{end}}
+{{else}}
+<p class="sub">Select a conversation to review its release candidate.</p>
+<div class="actions"><a class="btn" href="/conversations">Choose conversation</a></div>
+{{end}}
+<div class="actions">
+<button class="btn primary" type="button" disabled title="Planned: promotion executes in Phase E">Promote to staging</button>
+<button class="btn danger" type="button" disabled title="Planned: rollback executes in Phase E">Roll back</button>
+</div>
+</div>
+<div class="card" id="history">
+<h3>Release history <span class="tag mut">Planned</span></h3>
+<p class="sub">When built: every promotion and rollback with digest, approver, timestamp, and health evidence. No releases have occurred in this build.</p>
+</div>
+</div>
+{{end}}

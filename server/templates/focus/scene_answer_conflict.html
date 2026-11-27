@@ -1,0 +1,14 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Question already answered</h1>
+<p class="sub">The question you answered is no longer open. Nothing was applied.</p>
+{{if .OpenQuestions}}
+<div class="card"><h3>Current open question</h3>
+{{range .OpenQuestions}}<p><span class="tag warn">{{.kind}}</span> {{.body}}</p>{{end}}
+</div>
+{{else}}
+<div class="card"><h3>No open questions</h3><p class="sub">This build has no open questions.</p></div>
+{{end}}
+<div class="actions"><a class="btn" href="/conversations/{{.ConversationID}}">Back to conversation</a></div>
+</div>
+{{end}}

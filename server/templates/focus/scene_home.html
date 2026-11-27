@@ -1,0 +1,21 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Overview</h1>
+<p class="sub">Signed in: tenant <span class="mono">{{.Tenant}}</span>. Applications and recent evidence at a glance; the console is where work happens.</p>
+<div class="card">
+<h3>Applications</h3>
+{{if .AppsError}}<p role="alert">{{.AppsError}}</p>
+{{else if .Apps}}<ul class="steps">{{range .Apps}}<li><span class="n">▸</span><a href="/apps/{{.id}}">{{.name}}</a> <span class="tag mut">{{.slug}}</span></li>{{end}}</ul>
+{{else}}<p class="sub">No applications yet.</p>{{end}}
+<div class="actions"><a class="btn" href="/apps/new">Create app</a><a class="btn" href="/apps">My apps</a></div>
+</div>
+<div class="card">
+<h3>Recent activity</h3>
+{{if .ActivityError}}<p role="alert">{{.ActivityError}}</p>
+{{else if .Events}}<ul class="steps">{{range .Events}}<li><span class="n">·</span>{{.tool}} {{.action}} — {{.outcome}}</li>{{end}}</ul>
+{{else}}<p class="sub">No activity yet.</p>{{end}}
+<div class="actions"><a class="btn" href="/activity">Full trail</a><a class="btn" href="/console?scene=gallery">Open console</a></div>
+</div>
+<form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>
+</div>
+{{end}}

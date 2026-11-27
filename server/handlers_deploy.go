@@ -35,10 +35,14 @@ func (s *Server) handleDeployPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refresh := status["status"] == "provisioning"
-	renderTemplate(w, r, "deploy.html", map[string]any{
+	meta := "Deployment record"
+	if st, _ := status["status"].(string); st != "" {
+		meta = "Status: " + st
+	}
+	s.renderFocusPage(w, r, "scene_deploy.html", "apps", appsSpine("apps"), meta, map[string]any{
 		"App": app, "Deploy": status, "OpKey": opkey,
 		"FlyConfigured": s.sprites != nil, "Refresh": refresh,
-	}, s.logger)
+	})
 }
 
 // handleDeployProvision runs one provision with a race: fast completions
@@ -71,12 +75,14 @@ func (s *Server) handleDeployProvision(w http.ResponseWriter, r *http.Request) {
 			renderError(w, r, http.StatusBadGateway, friendlyToolError(res.err), s.logger, res.err.Error())
 			return
 		}
-		renderTemplate(w, r, "deploy_result.html", map[string]any{
-			"AppID": id, "Deploy": res.result,
-		}, s.logger)
+		s.renderFocusPage(w, r, "scene_deploy_result.html", "apps", appsSpine("apps"),
+			"Provision outcome", map[string]any{
+				"AppID": id, "Deploy": res.result,
+			})
 	case <-time.After(slowThreshold):
 		w.WriteHeader(http.StatusAccepted)
-		renderTemplate(w, r, "deploy_interstitial.html", map[string]any{"AppID": id}, s.logger)
+		s.renderFocusPage(w, r, "scene_deploy_interstitial.html", "apps", appsSpine("apps"),
+			"Provisioning", map[string]any{"AppID": id})
 	}
 }
 

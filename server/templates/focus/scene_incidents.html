@@ -1,0 +1,28 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Incidents</h1>
+<p class="sub">Troubleshooting starts from evidence. The failures below are real audit outcomes; managed incident tracking does not exist yet and is labeled as such.</p>
+<div class="card" id="failures">
+<h3>Recent failures <span class="tag mut">audit-derived · {{.Total}} kept</span></h3>
+<p class="sub">Per-second stream polls are excluded from this window. Outcomes counted as failures: framework rejections (failed, invalid-input, invalid-entity, forbidden, key-reuse, denied, expired) plus composed studio strings mentioning fail, reject, block, error, denied, or expiry.</p>
+<form method="get" action="/incidents" style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+<input type="text" name="tool" value="{{.ToolFilter}}" placeholder="Filter by exact tool name" aria-label="Filter by exact tool name" maxlength="128" style="flex:1;min-width:200px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:8px 12px;font:inherit">
+<button class="btn" type="submit">Apply</button>
+{{if .ToolFilter}}<a class="btn" href="/incidents">Clear</a>{{end}}
+</form>
+{{if .Failed}}
+<div class="scroll"><table><thead><tr><th>ID</th><th>Time</th><th>Tool</th><th>Action</th><th>App</th><th>Outcome</th></tr></thead><tbody>
+{{range .Failed}}<tr><td class="mono">{{.id}}</td><td class="mono">{{.at}}</td><td>{{.tool}}</td><td>{{.action}}</td><td class="mono">{{.miniapp}}{{with .version}} v{{.}}{{end}}</td><td><span class="tag bad">{{.outcome}}</span></td></tr>{{end}}
+</tbody></table></div>
+{{else}}
+<p class="sub">No failed outcomes in the recent trail.</p>
+{{end}}
+<div class="actions"><a class="btn" href="/activity">Full activity trail</a></div>
+</div>
+<div class="card" id="managed">
+<h3>Managed incidents <span class="tag mut">Planned</span></h3>
+<p class="sub">When built: incident records with severity, root-cause analysis views linking evidence, and guided recovery actions with receipts. None of this exists today — the table above is the complete current capability.</p>
+<div class="actions"><button class="btn" type="button" disabled title="Planned: no incident backend exists yet">Open incident</button></div>
+</div>
+</div>
+{{end}}

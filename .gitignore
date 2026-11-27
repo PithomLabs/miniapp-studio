@@ -39,6 +39,7 @@ dev-parity.local.json
 # Live handoff binding (T1): branch identities written by `task dev:bind`.
 # Identities only, but stays untracked. The DSN lives outside the repo.
 /dev-neon.json
+/dev-serve.json
 /dev-diag-roles.json
 # Live run evidence (S7): bootstrap console output shows versions, dirty
 # states, counts, timings, and phase events. Redacted by construction

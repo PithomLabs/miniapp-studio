@@ -28,7 +28,8 @@ func (s *Server) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res["OpKey"] = opkey
-	renderTemplate(w, r, "connectors.html", res, s.logger)
+	s.renderFocusPage(w, r, "scene_connectors.html", "connectors", connectorsSpine("manager"),
+		"Managed connections", res)
 }
 
 // handleConnectorWizard renders the Custom API wizard form.
@@ -38,7 +39,8 @@ func (s *Server) handleConnectorWizard(w http.ResponseWriter, r *http.Request) {
 		renderError(w, r, http.StatusInternalServerError, "", s.logger, err.Error())
 		return
 	}
-	renderTemplate(w, r, "connector_wizard.html", map[string]any{"OpKey": key}, s.logger)
+	s.renderFocusPage(w, r, "scene_connector_wizard.html", "connectors", connectorsSpine("wizard"),
+		"Custom API wizard", map[string]any{"OpKey": key})
 }
 
 // customForm carries one wizard submission. Credential lives in memory only:
@@ -98,9 +100,9 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.conns == nil {
-		renderTemplate(w, r, "connector_result.html", map[string]any{
+		s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 			"Name": form.Name, "Unconfigured": true,
-		}, s.logger)
+		})
 		return
 	}
 	res, err := s.conns.TestCustomAPI(r.Context(), fly.CustomAPITestRequest{
@@ -108,14 +110,14 @@ func (s *Server) handleConnectorTest(w http.ResponseWriter, r *http.Request) {
 		TestURL: form.TestURL, AuthMethod: form.AuthMethod,
 	})
 	if err != nil {
-		renderTemplate(w, r, "connector_result.html", map[string]any{
+		s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 			"Name": form.Name, "Error": "Connector test failed.",
-		}, s.logger)
+		})
 		return
 	}
-	renderTemplate(w, r, "connector_result.html", map[string]any{
+	s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 		"Name": form.Name, "Status": res.Status, "Message": res.Message,
-	}, s.logger)
+	})
 }
 
 // handleConnectorCreate runs one Custom API creation directly against the
@@ -129,9 +131,9 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.conns == nil {
-		renderTemplate(w, r, "connector_result.html", map[string]any{
+		s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 			"Name": form.Name, "Unconfigured": true,
-		}, s.logger)
+		})
 		return
 	}
 	conn, err := s.conns.CreateCustomAPI(r.Context(), fly.CustomAPIRequest{
@@ -140,9 +142,9 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 		RefreshToken: form.RefreshToken,
 	})
 	if err != nil {
-		renderTemplate(w, r, "connector_result.html", map[string]any{
+		s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 			"Name": form.Name, "Error": "Connector creation failed.",
-		}, s.logger)
+		})
 		return
 	}
 	key, err := newOpKey()
@@ -153,9 +155,9 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.invokeTool(r.Context(), r, "connectors.custom_attest", map[string]any{
 		"id": conn.ID, "provider": conn.Provider, "type": conn.ConnectionType,
 	}, key); err != nil {
-		renderTemplate(w, r, "connector_result.html", map[string]any{
+		s.renderFocusPage(w, r, "scene_connector_result.html", "connectors", connectorsSpine("wizard"), "Connector result", map[string]any{
 			"Name": form.Name, "Error": "Connector created but attestation failed.",
-		}, s.logger)
+		})
 		return
 	}
 	http.Redirect(w, r, "/connectors", http.StatusFound)

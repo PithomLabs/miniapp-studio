@@ -1,0 +1,15 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Validation result</h1>
+{{if .valid}}
+<div class="card good"><h3>Valid</h3><p class="sub">Content hash: <span class="mono">{{.hash}}</span></p></div>
+{{else}}
+<div class="card bad"><h3>Invalid</h3>
+<ul>{{range .errors}}<li><span class="mono">{{.code}}</span> {{.path}}: {{.message}}</li>{{end}}</ul>
+</div>
+{{end}}
+<div class="card"><h3>Submitted spec</h3><pre class="code">{{.Spec}}</pre>
+<div class="actions"><a class="btn" href="/apps/new">Back to Create</a></div>
+</div>
+</div>
+{{end}}

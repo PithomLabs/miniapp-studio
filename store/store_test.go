@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -110,27 +109,11 @@ func TestMigrateIdempotent(t *testing.T) {
 }
 
 func TestMigrateRequiresFramework(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL unset")
-	}
 	ctx := context.Background()
-	owner, err := NewPool(ctx, dsn, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer owner.Close()
-	dbname := "studio_migcheck_" + randomHexForTest(t, 4)
-	if _, err := owner.Exec(ctx, `CREATE DATABASE `+dbname); err != nil {
-		t.Fatalf("create scratch db: %v", err)
-	}
-	defer func() { _, _ = owner.Exec(ctx, `DROP DATABASE IF EXISTS `+dbname) }()
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed.Path = "/" + dbname
-	if err := Migrate(ctx, parsed.String(), testdb.Policy(t)); err == nil {
+	// ScratchDSN: run-pattern, guarded, force-dropped on cleanup — no
+	// hand-rolled database names outside the run guard.
+	scratch := testdb.ScratchDSN(t)
+	if err := Migrate(ctx, scratch, testdb.Policy(t)); err == nil {
 		t.Error("migrate without framework schema accepted, want refusal")
 	} else if !strings.Contains(err.Error(), "framework schema") {
 		t.Errorf("error = %v, want framework-schema refusal", err)

@@ -121,6 +121,8 @@ func TestEndpointRejectionPrecedesDial(t *testing.T) {
 		"NEON_PROJECT_ID=proj_test_123",
 		"NEON_BRANCH_ID=br_test_abc",
 		"NEON_ENDPOINT_HOSTS=ep-test-0001.invalid",
+		"NEON_BRANCH_NAME=dev",
+		"NEON_BRANCH_PROTECTED=false",
 		"TEST_DATABASE_URL=postgres://maint:pw@u512-unapproved.invalid:5432/postgres?sslmode=verify-full")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()

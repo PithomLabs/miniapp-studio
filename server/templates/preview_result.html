@@ -1,9 +1,0 @@
-{{define "content"}}
-<h1>Dry-run preview</h1>
-{{if .DryError}}<p role="alert">{{.DryError}}</p>
-{{else}}<p>Fixture {{.fixture}} · workflow {{.workflowId}} · completed: {{.completed}}</p>
-<h2>Outputs</h2><pre>{{.outputs}}</pre>
-<h2>Messages</h2><ul>{{range .messages}}<li>{{.}}</li>{{end}}</ul>
-{{end}}
-<p><a href="/apps/new">Back to Create</a> · <a href="/">Home</a></p>
-{{end}}

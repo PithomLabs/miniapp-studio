@@ -322,6 +322,7 @@ func (s *Server) renderConsoleUnfocused(w http.ResponseWriter, r *http.Request, 
 		} else {
 			data["GalleryOpKey"] = key
 		}
+		data["Areas"] = focusAreas
 		s.renderFocus(w, r, "scene_gallery.html", data)
 	case "evidence":
 		key, err := newOpKey()
@@ -363,6 +364,7 @@ func (s *Server) renderConsoleGallery(w http.ResponseWriter, r *http.Request, da
 		return
 	}
 	data["GalleryOpKey"] = key
+	data["Areas"] = focusAreas
 	s.renderConsoleScene(w, r, data, "gallery", "scene_gallery.html", convID, nil)
 }
 

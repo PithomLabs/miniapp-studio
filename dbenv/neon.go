@@ -40,6 +40,12 @@ type EndpointPolicy struct {
 	BranchID     string
 	ParentBranch string
 	Hosts        []string
+	// BranchName + Protected are the production-identity root (see
+	// BranchBinding). Loaders guarantee BranchName non-empty;
+	// RefuseProductionBranch treats empty as unknown and refuses.
+	ProjectName string
+	BranchName  string
+	Protected   bool
 }
 
 // PolicyFromEnv builds the endpoint policy from branch metadata. Every
@@ -49,6 +55,9 @@ func PolicyFromEnv() (EndpointPolicy, error) {
 	pol.ProjectID = strings.TrimSpace(os.Getenv("NEON_PROJECT_ID"))
 	pol.BranchID = strings.TrimSpace(os.Getenv("NEON_BRANCH_ID"))
 	pol.ParentBranch = strings.TrimSpace(os.Getenv("NEON_PARENT_BRANCH"))
+	pol.ProjectName = strings.TrimSpace(os.Getenv("NEON_PROJECT_NAME"))
+	pol.BranchName = strings.TrimSpace(os.Getenv("NEON_BRANCH_NAME"))
+	protectedRaw, protectedSet := os.LookupEnv("NEON_BRANCH_PROTECTED")
 	for _, h := range strings.Split(os.Getenv("NEON_ENDPOINT_HOSTS"), ",") {
 		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
 			pol.Hosts = append(pol.Hosts, h)
@@ -62,6 +71,20 @@ func PolicyFromEnv() (EndpointPolicy, error) {
 	}
 	if len(pol.Hosts) == 0 {
 		return EndpointPolicy{}, fmt.Errorf("%w: NEON_ENDPOINT_HOSTS (no endpoint binding)", ErrNoPolicy)
+	}
+	if pol.BranchName == "" {
+		return EndpointPolicy{}, fmt.Errorf("%w: NEON_BRANCH_NAME (no branch identity)", ErrNoPolicy)
+	}
+	if !protectedSet {
+		return EndpointPolicy{}, fmt.Errorf("%w: NEON_BRANCH_PROTECTED (no protection identity)", ErrNoPolicy)
+	}
+	switch strings.ToLower(strings.TrimSpace(protectedRaw)) {
+	case "true", "1":
+		pol.Protected = true
+	case "false", "0":
+		pol.Protected = false
+	default:
+		return EndpointPolicy{}, fmt.Errorf("%w: NEON_BRANCH_PROTECTED must be true or false", ErrNoPolicy)
 	}
 	return pol, nil
 }

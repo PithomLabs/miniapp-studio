@@ -1,0 +1,36 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Previews</h1>
+<p class="sub">Three preview kinds, three honest states. Only dry-run fixture previews execute today; the other two are designed and labeled, with no controls pretending otherwise.</p>
+<div class="card" id="kinds">
+<h3>Which preview is which</h3>
+<div class="scroll"><table><thead><tr><th>Kind</th><th>State</th><th>What it is</th></tr></thead><tbody>
+<tr><td>Dry-run</td><td><span class="tag ok">Functional</span></td><td>Fixture execution on the builder. <a href="/apps/new">Run one</a>.</td></tr>
+<tr><td>Workspace Preview</td><td><span class="tag mut">Planned</span></td><td>A live look at the Builder's working tree for the current task. No backend yet.</td></tr>
+<tr><td>Application Preview</td><td><span class="tag mut">Planned</span></td><td>Per-PR deployed preview with identity, commit, URL, health, and expiry. Preview controller is T3-gated.</td></tr>
+</tbody></table></div>
+<p class="sub">Engineering PR Preview (this page, for reviewers) and customer Application Preview (for end users) are separate lifecycles sharing nothing but the artifact digest. They are never merged here.</p>
+</div>
+<div class="card" id="environments">
+<h3>Current deployments</h3>
+<p class="sub">Live deployment records. These are deployments, not previews — shown so reviewers see what is actually running.</p>
+{{if .Apps}}
+<div class="scroll"><table><thead><tr><th>App</th><th>Version</th><th>Status</th><th>URL</th></tr></thead><tbody>
+{{range .Apps}}<tr><td><a href="/apps/{{.id}}">{{.name}}</a></td><td>{{.version}}</td><td>{{.deploy_status}}</td><td>{{with .deploy_url}}<a href="{{.}}">{{.}}</a>{{else}}—{{end}}</td></tr>{{end}}
+</tbody></table></div>
+{{else}}
+<p class="sub">No applications yet.</p>
+{{end}}
+</div>
+<div class="card" id="workspace">
+<h3>Workspace Preview <span class="tag mut">Planned</span></h3>
+<p class="sub">When built: a live view of the Builder Sprite's working tree for the focused task — files changed, running checks, and a shareable session link for the reviewer. Nothing here executes today.</p>
+<div class="actions"><button class="btn" type="button" disabled title="Planned: no workspace preview backend exists yet">Open workspace preview</button></div>
+</div>
+<div class="card" id="application">
+<h3>Application Preview <span class="tag mut">Planned · T3-gated</span></h3>
+<p class="sub">When built: per-PR isolated previews, each with preview identity, commit SHA, application URL, health, expiration, and retirement status. Requires the preview controller (T3), which does not exist yet.</p>
+<div class="actions"><button class="btn" type="button" disabled title="Planned: preview controller is T3-gated">Request preview</button></div>
+</div>
+</div>
+{{end}}

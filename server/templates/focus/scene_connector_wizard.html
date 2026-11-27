@@ -1,0 +1,23 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Custom API connection</h1>
+<p class="sub">Define the connector, test the credential without storing it, then create it with least-privilege scope. Credentials are never displayed back, logged, or stored outside the connector gateway.</p>
+<div class="card">
+<form method="post" action="/connectors/custom/test">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<div class="fgrid">
+<label>Name<input type="text" name="name" required></label>
+<label>Base API URL<input type="url" name="base_url" required></label>
+<label>Test URL<input type="url" name="test_url"></label>
+<label>Auth method<select name="auth_method"><option value="header">header</option><option value="custom_header">custom_header</option><option value="query_param">query_param</option><option value="url_path">url_path</option></select></label>
+<label>Credential<input type="password" name="credential" autocomplete="off" required></label>
+</div>
+<div class="actions">
+<button class="btn" type="submit" formaction="/connectors/custom/test">Test without storing</button>
+<button class="btn primary" type="submit" formaction="/connectors/custom/create">Test passed — create scoped connection</button>
+</div>
+</form>
+</div>
+<div class="actions"><a class="btn" href="/connectors">Back to Connectors</a></div>
+</div>
+{{end}}

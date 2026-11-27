@@ -1,0 +1,72 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">{{if .Thread.title}}{{.Thread.title}}{{else}}Conversation{{end}}</h1>
+<p class="sub">Durable development task. Builds, questions, and approvals below are live Studio state — answering never authorizes, only deciding does.</p>
+{{range .Builds}}
+<div class="card">
+<h3>Build <span class="mono">{{.build_id}}</span> <span class="tag mut">{{.status}}</span>{{with .turn}} <span class="tag mut">turn {{.n}} · {{.status}}</span>{{end}}</h3>
+</div>
+{{end}}
+<div class="card">
+<h3>Thread</h3>
+<div id="thread">
+{{range .Items}}{{if eq .Kind "message"}}<div data-seq="{{.Seq}}"><strong>{{.Role}}:</strong> {{.Body}}</div>
+{{else}}<div data-seq="{{.Seq}}"><em>{{.Type}}:</em> {{.Text}}</div>
+{{end}}{{end}}
+</div>
+</div>
+<div class="card">
+<h3>Send a message</h3>
+<form method="post" action="/conversations/{{.Thread.id}}/messages">
+<input type="hidden" name="opkey" value="{{.MsgOpKey}}">
+<div class="fgrid"><label>Message<textarea name="body" required></textarea></label></div>
+<div class="actions"><button class="btn primary" type="submit">Send</button></div>
+</form>
+</div>
+{{range .Builds}}{{range .open_questions}}
+<div class="card">
+<h3>Question <span class="tag warn">{{.kind}}</span></h3>
+<p>{{.body}}</p>
+{{if .options}}<ul>{{range .options}}<li>{{.}}</li>{{end}}</ul>{{end}}
+<form method="post" action="/questions/{{.id}}/answer">
+<input type="hidden" name="opkey" value="{{.opkey}}">
+{{if eq .kind "authorization_request"}}
+<div class="actions"><button class="btn primary" type="submit" name="answer" value="approved">Approve</button>
+<button class="btn danger" type="submit" name="answer" value="rejected">Reject</button></div>
+{{else}}
+<div class="frow"><input type="text" name="answer" maxlength="65536" required aria-label="Answer" style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:9px 12px;font:inherit">
+<button class="btn primary" type="submit">Answer</button></div>
+{{end}}
+</form>
+</div>
+{{end}}{{end}}
+<p><a href="/conversations">All conversations</a> · <a href="/console?scene=gallery">Console gallery</a></p>
+<script>
+(function(){
+  var list = document.getElementById('thread');
+  var src = new EventSource(window.location.pathname + '/events?after={{.LatestSeq}}');
+  src.addEventListener('update', function(ev){
+    var item;
+    try { item = JSON.parse(ev.data); } catch (e) { return; }
+    var div = document.createElement('div');
+    if (item.kind === 'message') {
+      var strong = document.createElement('strong');
+      strong.textContent = (item.role || 'message') + ': ';
+      div.appendChild(strong);
+      div.appendChild(document.createTextNode(item.body || ''));
+    } else {
+      var em = document.createElement('em');
+      em.textContent = (item.type || 'event') + ': ';
+      div.appendChild(em);
+      var text = '';
+      if (item.payload && typeof item.payload === 'object') {
+        text = item.payload.text || item.payload.body || '';
+      }
+      div.appendChild(document.createTextNode(text));
+    }
+    list.appendChild(div);
+  });
+})();
+</script>
+</div>
+{{end}}

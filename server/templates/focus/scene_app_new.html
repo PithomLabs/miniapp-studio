@@ -1,0 +1,38 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Create App</h1>
+<p class="sub">The conversational builder ships in P5. Today: paste a MiniappSpec, validate it, preview it against fixtures, then save it to a new or existing app.</p>
+<div class="card">
+<h3>1. Register the app</h3>
+<form method="post" action="/apps">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<div class="fgrid">
+<label>Slug<input type="text" name="slug" required></label>
+<label>Name<input type="text" name="name" required></label>
+<label>Description<input type="text" name="description"></label>
+</div>
+<div class="actions"><button class="btn primary" type="submit">Create</button></div>
+</form>
+</div>
+<div class="card">
+<h3>2. Validate a spec</h3>
+<form method="post" action="/apps/new/validate">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<div class="fgrid"><label>MiniappSpec JSON<textarea name="spec" placeholder="Paste MiniappSpec JSON"></textarea></label></div>
+<div class="actions"><button class="btn" type="submit">Validate</button></div>
+</form>
+</div>
+<div class="card">
+<h3>3. Preview with fixtures</h3>
+<form method="post" action="/apps/new/preview">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<div class="fgrid">
+<label>MiniappSpec JSON<textarea name="spec" placeholder="Paste MiniappSpec JSON"></textarea></label>
+<label>Workflow<input type="text" name="workflow" required></label>
+<label>Fixture<input type="text" name="fixture" required></label>
+</div>
+<div class="actions"><button class="btn" type="submit">Dry-run preview</button></div>
+</form>
+</div>
+</div>
+{{end}}

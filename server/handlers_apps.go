@@ -2,8 +2,18 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
+
+// appSlug reads the slug out of an app.get result for display metadata.
+func appSlug(app map[string]any) string {
+	slug, _ := app["slug"].(string)
+	if slug == "" {
+		return "app"
+	}
+	return slug
+}
 
 // handleHome renders the tenant dashboard: recent apps plus recent activity.
 // Each panel degrades independently: a backend failure shows an error panel,
@@ -33,7 +43,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	} else {
 		data["ActivityError"] = "Activity unavailable."
 	}
-	renderTemplate(w, r, "home.html", data, s.logger)
+	s.renderFocusPage(w, r, "scene_home.html", "home", nil, "Studio overview", data)
 }
 
 // handleAppsNew renders the Create App editor: a spec textarea, validation
@@ -45,7 +55,8 @@ func (s *Server) handleAppsNew(w http.ResponseWriter, r *http.Request) {
 		renderError(w, r, http.StatusInternalServerError, "", s.logger, err.Error())
 		return
 	}
-	renderTemplate(w, r, "app_new.html", map[string]any{"OpKey": key}, s.logger)
+	s.renderFocusPage(w, r, "scene_app_new.html", "apps", appsSpine("new"),
+		"Register · Validate · Preview", map[string]any{"OpKey": key})
 }
 
 // handleAppsValidate runs spec.validate and renders actionable results.
@@ -62,10 +73,11 @@ func (s *Server) handleAppsValidate(w http.ResponseWriter, r *http.Request) {
 	text := r.Form.Get("spec")
 	var doc any
 	if err := json.Unmarshal([]byte(text), &doc); err != nil {
-		renderTemplate(w, r, "spec_result.html", map[string]any{
-			"Spec": text, "Valid": false,
-			"Errors": []map[string]any{{"code": "E_SCHEMA", "path": "$", "message": "invalid JSON"}},
-		}, s.logger)
+		s.renderFocusPage(w, r, "scene_spec_result.html", "apps", appsSpine("new"),
+			"Validation failed", map[string]any{
+				"Spec": text, "valid": false,
+				"errors": []map[string]any{{"code": "E_SCHEMA", "path": "$", "message": "invalid JSON"}},
+			})
 		return
 	}
 	res, err := s.invokeTool(r.Context(), r, "spec.validate", map[string]any{"spec": doc}, key)
@@ -74,7 +86,11 @@ func (s *Server) handleAppsValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res["Spec"] = text
-	renderTemplate(w, r, "spec_result.html", res, s.logger)
+	meta := "Validation failed"
+	if valid, _ := res["valid"].(bool); valid {
+		meta = "Validation passed"
+	}
+	s.renderFocusPage(w, r, "scene_spec_result.html", "apps", appsSpine("new"), meta, res)
 }
 
 // handleAppsPreview validates and dry-runs a spec draft against one of its
@@ -107,7 +123,8 @@ func (s *Server) handleAppsPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if valid, _ := validated["valid"].(bool); !valid {
 		validated["Spec"] = text
-		renderTemplate(w, r, "spec_result.html", validated, s.logger)
+		s.renderFocusPage(w, r, "scene_spec_result.html", "apps", appsSpine("new"),
+			"Validation failed", validated)
 		return
 	}
 	tenant, _, _, _ := TenantOf(r)
@@ -118,13 +135,21 @@ func (s *Server) handleAppsPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := dryRunForTenant(admitted, fixture, workflow)
 	if err != nil {
-		renderTemplate(w, r, "preview_result.html", map[string]any{
-			"Spec": text, "DryError": err.Error(),
-		}, s.logger)
+		s.renderFocusPage(w, r, "scene_preview_result.html", "apps", appsSpine("new"),
+			"Dry-run failed", map[string]any{
+				"Spec": text, "DryError": err.Error(),
+			})
 		return
 	}
 	res["Spec"] = text
-	renderTemplate(w, r, "preview_result.html", res, s.logger)
+	// Marshal outputs to JSON: the raw map would render Go syntax.
+	if out, ok := res["outputs"]; ok {
+		if raw, err := json.MarshalIndent(out, "", "  "); err == nil {
+			res["outputs"] = string(raw)
+		}
+	}
+	s.renderFocusPage(w, r, "scene_preview_result.html", "apps", appsSpine("new"),
+		"Dry-run preview", res)
 }
 
 // handleAppsCreate registers one application, then redirects to its page.
@@ -186,7 +211,9 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		renderError(w, r, http.StatusInternalServerError, "", s.logger, err.Error())
 		return
 	}
-	renderTemplate(w, r, "apps_list.html", map[string]any{"Apps": rows, "OpKey": fresh}, s.logger)
+	s.renderFocusPage(w, r, "scene_apps.html", "apps", appsSpine("apps"),
+		plural(len(rows), "application"),
+		map[string]any{"Apps": rows, "OpKey": fresh})
 }
 
 // handleAppDetail renders one application: metadata, spec versions, and the
@@ -230,9 +257,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		renderError(w, r, http.StatusInternalServerError, "", s.logger, err.Error())
 		return
 	}
-	renderTemplate(w, r, "app_detail.html", map[string]any{
-		"App": app, "Versions": versions, "Deploy": deploy, "OpKey": opkey,
-	}, s.logger)
+	s.renderFocusPage(w, r, "scene_app_detail.html", "apps", appsSpine("apps"),
+		fmt.Sprintf("%s · %s", appSlug(app), plural(len(versions), "version")), map[string]any{
+			"App": app, "Versions": versions, "Deploy": deploy, "OpKey": opkey,
+		})
 }
 
 // handleAppSaveSpec stores one immutable spec version from pasted JSON.

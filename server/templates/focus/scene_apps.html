@@ -1,0 +1,12 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">My Apps</h1>
+<p class="sub">Applications in this tenant. Open one for versions, specs, and deployment.</p>
+{{if .Apps}}
+<div class="scroll"><table><thead><tr><th>Name</th><th>Slug</th><th>Version</th><th>Deploy</th></tr></thead>
+<tbody>{{range .Apps}}<tr><td><a href="/apps/{{.id}}">{{.name}}</a></td><td>{{.slug}}</td><td>{{.version}}</td><td>{{.deploy_status}}</td></tr>{{end}}</tbody></table></div>
+{{else}}
+<div class="card"><h3>No applications yet</h3><p class="sub">Create one to get started.</p><div class="actions"><a class="btn primary" href="/apps/new">Create one</a></div></div>
+{{end}}
+</div>
+{{end}}

@@ -1,0 +1,24 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Conversations</h1>
+<p class="sub">Development tasks as durable conversations. Open one to focus the console spine, scenes, and Pulse on it.</p>
+{{if .Conversations}}
+<div class="card">
+<h3>All conversations</h3>
+<ul class="steps">
+{{range .Conversations}}<li><span class="n">▸</span><a href="/conversations/{{.id}}">{{if .title}}{{.title}}{{else}}Untitled{{end}}</a> <span class="tag mut">{{.status}}</span></li>{{end}}
+</ul>
+</div>
+{{else}}
+<div class="card"><h3>No conversations yet</h3><p class="sub">Start one below — it becomes the focus of the console.</p></div>
+{{end}}
+<div class="card">
+<h3>New conversation</h3>
+<form method="post" action="/conversations" style="display:flex;gap:8px;margin-top:8px">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<input type="text" name="title" maxlength="256" placeholder="e.g. Invoice Review Desk" aria-label="Conversation title" style="flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--txt);padding:9px 12px;font:inherit">
+<button class="btn primary" type="submit">Start</button>
+</form>
+</div>
+</div>
+{{end}}

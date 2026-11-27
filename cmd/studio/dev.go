@@ -5,7 +5,8 @@ package main
 //	studio dev diag-roles  # role-capability booleans for studio_lookup (secret-free diagnostic)
 //	studio dev setup       # Neon preflight: metadata, endpoint binding, TLS, live version
 //	studio dev doctor      # diagnose toolchain, endpoint, database, migrations
-//	studio dev init        # provision + migrate one fresh run database
+//	studio dev init        # ensure the shared dev database (idempotent;
+//	                         explicit --db-name provisions scratch instead)
 //	studio dev reset       # drop stale run databases (scoped, explicit)
 //	studio dev test        # run the test suite through one entry point
 //	studio dev fingerprint # machine-readable environment record
@@ -15,7 +16,8 @@ package main
 // grants, or migration logic. DSNs arrive via TEST_DATABASE_URL or
 // --dsn-file and are never printed; errors pass through redactDSN.
 // Branch binding arrives via NEON_PROJECT_ID, NEON_BRANCH_ID,
-// NEON_PARENT_BRANCH (optional), and NEON_ENDPOINT_HOSTS.
+// NEON_PARENT_BRANCH (optional), NEON_ENDPOINT_HOSTS, NEON_BRANCH_NAME,
+// and NEON_BRANCH_PROTECTED. Every verb refuses production bindings.
 
 import (
 	"context"
@@ -37,7 +39,7 @@ import (
 
 func runDev(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles> [flags]")
+		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve> [flags]")
 	}
 	switch args[0] {
 	case "bind":
@@ -56,8 +58,12 @@ func runDev(args []string) error {
 		return runDevTest(args[1:])
 	case "fingerprint":
 		return runDevFingerprint(args[1:])
+	case "serve-init":
+		return runDevServeInit(args[1:])
+	case "serve":
+		return runDevServe(args[1:])
 	default:
-		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles)", args[0])
+		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve)", args[0])
 	}
 }
 
@@ -81,13 +87,129 @@ func devDSN(dsnFile string) (string, error) {
 
 // devPolicy loads the endpoint policy: an explicit --metadata-file
 // wins (owner-terminal file handoff); otherwise the NEON_*
-// environment (CI/T2 non-interactive path). No merging: a binding
-// half from file and half from env would name no real branch.
+// environment (CI/T2 non-interactive path), which must carry the same
+// branch identity (NEON_BRANCH_NAME + NEON_BRANCH_PROTECTED). No
+// merging: a binding half from file and half from env would name no
+// real branch.
 func devPolicy(metadataFile string) (dbenv.EndpointPolicy, error) {
 	if metadataFile != "" {
 		return dbenv.PolicyFromFile(metadataFile)
 	}
 	return dbenv.PolicyFromEnv()
+}
+
+// devDatabaseName is the one shared development database. Deliberately
+// NOT run-pattern: test tooling (reaper, reset) refuses non-run
+// databases, so review data is never force-cleaned; per-process test
+// isolation still uses fresh run databases via testdb (untouched).
+const devDatabaseName = "studio_dev_ui"
+
+// resolveInitDB maps --db-name to (name, stable): empty means the
+// shared dev database (idempotent); an explicit name must match the
+// run pattern and provisions scratch (refusing existing names).
+func resolveInitDB(explicit string) (name string, stable bool, err error) {
+	if explicit == "" {
+		return devDatabaseName, true, nil
+	}
+	if !dbenv.IsRunDB(explicit) {
+		return "", false, fmt.Errorf("dev init: refusing non-run database name %q (explicit names are scratch run databases; omit --db-name for the shared dev database)", explicit)
+	}
+	return explicit, false, nil
+}
+
+// ensureDevDatabase provisions a dev database, then baselines, migrates,
+// and version-verifies it. Stable mode (the shared dev database) reuses
+// an existing database and skips test grants; scratch mode (explicit
+// run-pattern names) refuses existing names and mirrors test grants,
+// preserving the legacy init behavior exactly.
+func ensureDevDatabase(ctx context.Context, base string, pol dbenv.EndpointPolicy, dbName string, stable bool) (string, error) {
+	// Defense in depth: both callers guard first, but this helper
+	// performs every mutation, so it refuses production itself.
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return "", fmt.Errorf("dev init: %w", err)
+	}
+	maint, err := dbenv.Pool(ctx, base, pol)
+	if err != nil {
+		return "", redactDSN(fmt.Errorf("dev init: %w", err), base)
+	}
+	defer maint.Close()
+	if err := dbenv.CheckPGMajor(ctx, maint); err != nil {
+		return "", err
+	}
+	var exists bool
+	if err := maint.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, dbName).Scan(&exists); err != nil {
+		return "", fmt.Errorf("dev init: existence check: %w", err)
+	}
+	if exists && !stable {
+		return "", fmt.Errorf("dev init: database %q already exists; pick another name or reset it first", dbName)
+	}
+	parsed, _ := url.Parse(base)
+	parsed.Path = "/" + dbName
+	dsn := parsed.String()
+	if !exists {
+		if _, err := maint.Exec(ctx, `CREATE DATABASE `+dbenv.QuoteIdent(dbName)); err != nil {
+			return "", fmt.Errorf("dev init: create database: %w", err)
+		}
+		fmt.Printf("dev init: created database %s\n", dbName)
+	}
+	root, err := repoRoot()
+	if err != nil {
+		return "", err
+	}
+	modDir, err := dbenv.FrameworkModuleDir(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if err := dbenv.ApplyFrameworkBaseline(ctx, dsn, modDir, pol); err != nil {
+		return "", redactDSN(err, dsn)
+	}
+	if stable {
+		// Live-role existence only: no run gate (non-run database
+		// by design), no fixed test credential on a persistent DB.
+		pool, err := dbenv.Pool(ctx, base, pol)
+		if err != nil {
+			return "", redactDSN(fmt.Errorf("dev init: %w", err), base)
+		}
+		roleErr := dbenv.EnsureLiveRole(ctx, pool)
+		pool.Close()
+		if roleErr != nil {
+			return "", redactDSN(fmt.Errorf("dev init: %w", roleErr), base)
+		}
+	} else if err := dbenv.EnsureClusterRoles(ctx, dsn, pol); err != nil {
+		return "", redactDSN(fmt.Errorf("dev init: %w", err), dsn)
+	}
+	if err := store.Migrate(ctx, dsn, pol); err != nil {
+		return "", redactDSN(err, dsn)
+	}
+	owner, err := dbenv.Pool(ctx, dsn, pol)
+	if err != nil {
+		return "", redactDSN(fmt.Errorf("dev init: %w", err), dsn)
+	}
+	defer owner.Close()
+	if !stable {
+		if err := dbenv.GrantTestPrivileges(ctx, owner); err != nil {
+			return "", redactDSN(err, dsn)
+		}
+	}
+	applied, dirty, err := store.CurrentVersion(ctx, owner)
+	if err != nil {
+		return "", redactDSN(err, dsn)
+	}
+	latest, err := store.LatestVersion()
+	if err != nil {
+		return "", err
+	}
+	if dirty || applied != latest {
+		return "", fmt.Errorf("dev init: studio schema at v%d/%d dirty=%v, want clean v%d", applied, latest, dirty, latest)
+	}
+	if exists {
+		fmt.Printf("dev init: reusing database %s (re-verified clean: studio v%d)\n", dbName, applied)
+	} else if stable {
+		fmt.Printf("dev init: initialized %s (studio v%d, framework baseline applied, roles ensured)\n", dbName, applied)
+	} else {
+		fmt.Printf("dev init: initialized %s (studio v%d, framework baseline applied, roles + grants ensured)\n", dbName, applied)
+	}
+	return dsn, nil
 }
 
 // repoRoot resolves the checkout root. Dev verbs run from anywhere
@@ -180,7 +302,10 @@ func runDevSetup(args []string) error {
 	if err != nil {
 		return fmt.Errorf("dev setup: %v (run dev bind, then retry)", err)
 	}
-	fmt.Printf("project: %s\nbranch:  %s\n", pol.ProjectID, pol.BranchID)
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return fmt.Errorf("dev setup: %w", err)
+	}
+	fmt.Printf("project: %s (%s)\nbranch:  %s (%s)\n", pol.ProjectName, pol.ProjectID, pol.BranchName, pol.BranchID)
 	if pol.ParentBranch != "" {
 		fmt.Printf("parent:   %s\n", pol.ParentBranch)
 	}
@@ -226,6 +351,9 @@ func runDevDiagRoles(args []string) error {
 	pol, err := devPolicy(*metadataFile)
 	if err != nil {
 		return err
+	}
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return fmt.Errorf("dev diag-roles: %w", err)
 	}
 	dsn, err := devDSN(*dsnFile)
 	if err != nil {
@@ -336,6 +464,11 @@ func collectFingerprint(dsnFile, metadataFile string) (Fingerprint, error) {
 		check("endpoint", "fail", err.Error())
 		return fp, err
 	}
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		check("production-guard", "fail", err.Error())
+		return fp, err
+	}
+	check("production-guard", "pass", "branch "+pol.BranchName)
 	dsn, err := devDSN(dsnFile)
 	if err != nil {
 		check("endpoint", "fail", err.Error())
@@ -397,7 +530,7 @@ func runDevInit(args []string) error {
 	fs := flag.NewFlagSet("dev init", flag.ContinueOnError)
 	dsnFile := fs.String("dsn-file", "", "file holding TEST_DATABASE_URL (or set the env var)")
 	metadataFile := fs.String("metadata-file", "", "branch binding JSON from dev bind (or NEON_* env)")
-	dbName := fs.String("db-name", "", "explicit run database name (must match the run pattern; default generates one)")
+	dbName := fs.String("db-name", "", "explicit scratch run database name (must match the run pattern; default ensures the shared dev database)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -412,75 +545,17 @@ func runDevInit(args []string) error {
 	if _, err := dbenv.CheckEndpoint(base, pol); err != nil {
 		return err
 	}
-	name := *dbName
-	if name == "" {
-		if name, err = dbenv.NewRunDBName(); err != nil {
-			return err
-		}
-	} else if !dbenv.IsRunDB(name) {
-		return fmt.Errorf("dev init: refusing non-run database name %q", name)
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return fmt.Errorf("dev init: %w", err)
+	}
+	name, stable, err := resolveInitDB(*dbName)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	maint, err := dbenv.Pool(ctx, base, pol)
-	if err != nil {
-		return redactDSN(fmt.Errorf("dev init: %w", err), base)
-	}
-	defer maint.Close()
-	if err := dbenv.CheckPGMajor(ctx, maint); err != nil {
-		return err
-	}
-	var exists bool
-	if err := maint.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, name).Scan(&exists); err != nil {
-		return fmt.Errorf("dev init: existence check: %w", err)
-	}
-	if exists {
-		return fmt.Errorf("dev init: database %q already exists; pick another name or reset it first", name)
-	}
-	if _, err := maint.Exec(ctx, `CREATE DATABASE `+dbenv.QuoteIdent(name)); err != nil {
-		return fmt.Errorf("dev init: create database: %w", err)
-	}
-	parsed, _ := url.Parse(base)
-	parsed.Path = "/" + name
-	dsn := parsed.String()
-	root, err := repoRoot()
-	if err != nil {
-		return err
-	}
-	modDir, err := dbenv.FrameworkModuleDir(ctx, root)
-	if err != nil {
-		return err
-	}
-	if err := dbenv.ApplyFrameworkBaseline(ctx, dsn, modDir, pol); err != nil {
-		return redactDSN(err, dsn)
-	}
-	if err := dbenv.EnsureClusterRoles(ctx, dsn, pol); err != nil {
-		return redactDSN(fmt.Errorf("dev init: %w", err), dsn)
-	}
-	if err := store.Migrate(ctx, dsn, pol); err != nil {
-		return redactDSN(err, dsn)
-	}
-	owner, err := dbenv.Pool(ctx, dsn, pol)
-	if err != nil {
-		return redactDSN(fmt.Errorf("dev init: %w", err), dsn)
-	}
-	defer owner.Close()
-	if err := dbenv.GrantTestPrivileges(ctx, owner); err != nil {
-		return redactDSN(err, dsn)
-	}
-	applied, dirty, err := store.CurrentVersion(ctx, owner)
-	if err != nil {
-		return redactDSN(err, dsn)
-	}
-	latest, err := store.LatestVersion()
-	if err != nil {
-		return err
-	}
-	if dirty || applied != latest {
-		return fmt.Errorf("dev init: studio schema at v%d/%d dirty=%v, want clean v%d", applied, latest, dirty, latest)
-	}
-	fmt.Printf("initialized %s (studio v%d, framework baseline applied, roles + grants ensured)\n", name, applied)
-	return nil
+	_, err = ensureDevDatabase(ctx, base, pol, name, stable)
+	return err
 }
 
 func runDevReset(args []string) error {
@@ -506,6 +581,9 @@ func runDevReset(args []string) error {
 	}
 	if _, err := dbenv.CheckEndpoint(base, pol); err != nil {
 		return err
+	}
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return fmt.Errorf("dev reset: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -614,6 +692,9 @@ func runDevTest(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := dbenv.RefuseProductionBranch(pol); err != nil {
+			return fmt.Errorf("dev test: %w", err)
+		}
 		raw, err := os.ReadFile(*dsnFile)
 		if err != nil {
 			return fmt.Errorf("dev test: read DSN file: %v", err)
@@ -625,12 +706,19 @@ func runDevTest(args []string) error {
 		if _, err := dbenv.CheckEndpoint(dsn, pol); err != nil {
 			return err
 		}
+		protected := "false"
+		if pol.Protected {
+			protected = "true"
+		}
 		cmd.Env = append(os.Environ(),
 			"TEST_DATABASE_URL="+dsn,
 			"NEON_PROJECT_ID="+pol.ProjectID,
 			"NEON_BRANCH_ID="+pol.BranchID,
 			"NEON_PARENT_BRANCH="+pol.ParentBranch,
 			"NEON_ENDPOINT_HOSTS="+strings.Join(pol.Hosts, ","),
+			"NEON_PROJECT_NAME="+pol.ProjectName,
+			"NEON_BRANCH_NAME="+pol.BranchName,
+			"NEON_BRANCH_PROTECTED="+protected,
 		)
 	}
 	if err := cmd.Run(); err != nil {

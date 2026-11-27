@@ -1,0 +1,33 @@
+{{define "scene"}}
+{{if eq .Deploy.status "provisioning"}}<meta http-equiv="refresh" content="2">{{end}}
+<div class="scene">
+<h1 class="title">Validate &amp; Deploy — {{.App.name}}</h1>
+<p class="sub">Version {{.App.version}} · hash <span class="mono">{{.App.hash}}</span></p>
+{{if .FlyConfigured}}
+<div class="card"><h3>Fly target</h3><p><span class="tag ok">configured</span></p></div>
+{{else}}
+<div class="card"><h3>Fly target</h3><p role="note"><span class="tag warn">not configured</span> Deployment actions report honestly until production credentials exist.</p></div>
+{{end}}
+<div class="card">
+<h3>Deployment</h3>
+<p>Status: {{.Deploy.status}}{{with .Deploy.url}} — <a href="{{.}}">{{.}}</a>{{end}}{{with .Deploy.error}} ({{.}}){{end}}</p>
+</div>
+<div class="card">
+<h3>Provision</h3>
+<form method="post" action="/apps/{{.App.id}}/deploy">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label><input type="checkbox" name="confirm" value="yes" required> I confirm provisioning a Fly target for this app.</label>
+<div class="actions"><button class="btn primary" type="submit">Provision</button></div>
+</form>
+</div>
+<div class="card">
+<h3>Retire</h3>
+<form method="post" action="/apps/{{.App.id}}/retire">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<label><input type="checkbox" name="confirm" value="yes" required> I confirm retiring this deployment.</label>
+<div class="actions"><button class="btn danger" type="submit">Retire</button></div>
+</form>
+</div>
+<div class="actions"><a class="btn" href="/apps/{{.App.id}}">Back to app</a></div>
+</div>
+{{end}}

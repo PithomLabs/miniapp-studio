@@ -93,6 +93,9 @@ func provisionRunDB(t *testing.T) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return "", err
+	}
 	dsn, err := dbenv.CreateRunDB(context.Background(), base, pol)
 	if err != nil {
 		return "", err
@@ -130,6 +133,10 @@ func ScratchDSN(t *testing.T) string {
 	pol, err := dbenv.PolicyFromEnv()
 	if err != nil {
 		t.Skipf("live Neon proof pending: %v", err)
+	}
+	// A production binding in tests fails LOUDLY, never skips quietly.
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		t.Fatal(err)
 	}
 	ep, err := dbenv.CheckEndpoint(base, pol)
 	if err != nil {
@@ -190,12 +197,17 @@ func MustTestDB(t *testing.T, name string) {
 
 // Policy loads the branch endpoint policy for migrate callers. It
 // skips (never fails) when Neon metadata is absent: without a bound
-// branch there is nothing to migrate against.
+// branch there is nothing to migrate against. A production binding
+// fails LOUDLY — tests must never run against prod, even ones that
+// provision their own databases.
 func Policy(t *testing.T) dbenv.EndpointPolicy {
 	t.Helper()
 	pol, err := dbenv.PolicyFromEnv()
 	if err != nil {
 		t.Skipf("live Neon proof pending: %v", err)
+	}
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		t.Fatal(err)
 	}
 	return pol
 }

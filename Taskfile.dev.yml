@@ -16,6 +16,15 @@ vars:
   DSN_FILE: $HOME/.config/miniapp-studio/dev.dsn
   NEON_PROJECT: miniapp-studio-dev
   NEON_BRANCH: dev
+  # Local UI serving (all overridable per run). Secrets are never defaulted:
+  # serve-init generates random values into these 0600 files on first run.
+  SERVE_LISTEN: 127.0.0.1:8080
+  SERVE_OPERATORS_FILE: $HOME/.config/miniapp-studio/operators.json
+  SERVE_KEYS_FILE: $HOME/.config/miniapp-studio/miniapp-keys.json
+  SERVE_GRANTS_FILE: $HOME/.config/miniapp-studio/miniapp-grants.json
+  SERVE_APP_PASSWORD_FILE: $HOME/.config/miniapp-studio/app-role.pw
+  SERVE_TOKEN_FILE: $HOME/.config/miniapp-studio/dev-login-token.txt
+  SERVE_MARKER_FILE: ./dev-serve.json
 
 tasks:
   bind:
@@ -74,19 +83,24 @@ tasks:
       - "{{.STUDIO}} dev fingerprint --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} > ./dev-parity.local.json"
 
   init:
-    desc: Provision + migrate one fresh run database on the bound Neon branch
+    desc: Ensure the shared dev database (idempotent; explicit --db-name provisions scratch instead)
     preconditions:
       - sh: test -f "{{.METADATA_FILE}}"
         msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
       - sh: test -f "{{.DSN_FILE}}"
         msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
     cmds:
-      - "{{.STUDIO}} dev init --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+      - "{{.STUDIO}} dev init --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
 
   migrate:
-    desc: Run pending Studio migrations via the existing studio migrate path (owner-managed databases; needs STUDIO_OWNER_DATABASE_URL or --dsn-file)
+    desc: Run pending Studio migrations on the bound branch (binding required so the production guard engages)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
     cmds:
-      - "{{.STUDIO}} migrate {{.CLI_ARGS}}"
+      - "{{.STUDIO}} migrate --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
 
   test:
     desc: "Run database-touching test packages serially (bind files required). Extra flags pass through: -- -v, -- -run NAME, -- -timeout 5m."
@@ -125,3 +139,21 @@ tasks:
       - task: doctor
       - task: init
       - task: test
+
+  serve-init:
+    desc: "One-time local UI setup: serve database, app role, operator, keys/grants (generates 0600 secret files on first run; never overwrites; rotates only with -- --rotate-app-password)"
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev serve-init --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} --operators-file {{.SERVE_OPERATORS_FILE}} --keys-file {{.SERVE_KEYS_FILE}} --grants-file {{.SERVE_GRANTS_FILE}} --app-password-file {{.SERVE_APP_PASSWORD_FILE}} --token-file {{.SERVE_TOKEN_FILE}} --marker-file {{.SERVE_MARKER_FILE}} {{.CLI_ARGS}}"
+
+  serve:
+    desc: "Serve the Studio UI locally (requires serve-init; loopback only; stop with Ctrl-C)"
+    preconditions:
+      - sh: test -f "{{.SERVE_MARKER_FILE}}"
+        msg: "Run task dev:serve-init first (missing {{.SERVE_MARKER_FILE}})"
+    cmds:
+      - "{{.STUDIO}} dev serve --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} --operators-file {{.SERVE_OPERATORS_FILE}} --keys-file {{.SERVE_KEYS_FILE}} --grants-file {{.SERVE_GRANTS_FILE}} --app-password-file {{.SERVE_APP_PASSWORD_FILE}} --token-file {{.SERVE_TOKEN_FILE}} --marker-file {{.SERVE_MARKER_FILE}} --listen {{.SERVE_LISTEN}}"

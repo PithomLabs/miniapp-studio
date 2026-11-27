@@ -1,0 +1,24 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">{{.App.name}}</h1>
+<p class="sub">Slug <span class="mono">{{.App.slug}}</span> · version {{.App.version}} · hash <span class="mono">{{.App.hash}}</span></p>
+<div class="card">
+<h3>Versions</h3>
+{{if .Versions}}<ul class="steps">{{range .Versions}}<li><span class="n">v{{.version}}</span><span class="mono">{{.hash}}</span></li>{{end}}</ul>
+{{else}}<p class="sub">No spec versions saved.</p>{{end}}
+</div>
+<div class="card">
+<h3>Save spec version</h3>
+<form method="post" action="/apps/{{.App.id}}/specs">
+<input type="hidden" name="opkey" value="{{.OpKey}}">
+<div class="fgrid"><label>MiniappSpec JSON<textarea name="spec" placeholder="Paste MiniappSpec JSON"></textarea></label></div>
+<div class="actions"><button class="btn primary" type="submit">Save version</button></div>
+</form>
+</div>
+<div class="card">
+<h3>Deployment</h3>
+<p>Status: {{.Deploy.status}}{{with .Deploy.url}} — <a href="{{.}}">{{.}}</a>{{end}}</p>
+<div class="actions"><a class="btn" href="/apps/{{.App.id}}/deploy">Validate &amp; Deploy</a><a class="btn" href="/apps">My apps</a></div>
+</div>
+</div>
+{{end}}

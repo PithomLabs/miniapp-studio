@@ -2,6 +2,7 @@ package dbenv
 
 import (
 	"crypto/tls"
+	"os"
 	"strings"
 	"testing"
 )
@@ -100,12 +101,65 @@ func TestPolicyFromEnv(t *testing.T) {
 	t.Setenv("NEON_BRANCH_ID", "br_test_abc")
 	t.Setenv("NEON_PARENT_BRANCH", "br_parent_xyz")
 	t.Setenv("NEON_ENDPOINT_HOSTS", "ep-test-0001.invalid, ep-test-0001-pooler.invalid")
+	t.Setenv("NEON_BRANCH_NAME", "dev")
+	t.Setenv("NEON_BRANCH_PROTECTED", "false")
 	pol, err := PolicyFromEnv()
 	if err != nil {
 		t.Fatalf("PolicyFromEnv: %v", err)
 	}
 	if pol.ProjectID != "proj_test_123" || pol.BranchID != "br_test_abc" || len(pol.Hosts) != 2 {
 		t.Errorf("policy mismatch: %+v", pol)
+	}
+	if pol.BranchName != "dev" || pol.Protected {
+		t.Errorf("identity mismatch: %+v", pol)
+	}
+}
+
+func TestPolicyFromEnvRequiresIdentity(t *testing.T) {
+	base := map[string]string{
+		"NEON_PROJECT_ID": "p", "NEON_BRANCH_ID": "b",
+		"NEON_ENDPOINT_HOSTS": "h.invalid",
+		"NEON_BRANCH_NAME":    "dev", "NEON_BRANCH_PROTECTED": "false",
+	}
+	setAll := func(t *testing.T, skip string, protected string) {
+		t.Helper()
+		for k, v := range base {
+			if k == skip {
+				t.Setenv(k, "")
+			} else if k == "NEON_BRANCH_PROTECTED" && protected != "" {
+				t.Setenv(k, protected)
+			} else {
+				t.Setenv(k, v)
+			}
+		}
+	}
+	setAll(t, "NEON_BRANCH_NAME", "")
+	if _, err := PolicyFromEnv(); err == nil {
+		t.Error("missing branch name accepted")
+	}
+	setAll(t, "NEON_BRANCH_PROTECTED", "")
+	if _, err := PolicyFromEnv(); err == nil {
+		t.Error("missing protection marker accepted")
+	}
+	// Truly-unset (not set-but-empty) exercises the !protectedSet
+	// branch; t.Setenv cannot unset, so do it manually with restore.
+	t.Setenv("NEON_PROJECT_ID", "p")
+	t.Setenv("NEON_BRANCH_ID", "b")
+	t.Setenv("NEON_ENDPOINT_HOSTS", "h.invalid")
+	t.Setenv("NEON_BRANCH_NAME", "dev")
+	old, hadOld := os.LookupEnv("NEON_BRANCH_PROTECTED")
+	os.Unsetenv("NEON_BRANCH_PROTECTED")
+	t.Cleanup(func() {
+		if hadOld {
+			os.Setenv("NEON_BRANCH_PROTECTED", old)
+		}
+	})
+	if _, err := PolicyFromEnv(); err == nil {
+		t.Error("unset protection marker accepted")
+	}
+	setAll(t, "", "maybe")
+	if _, err := PolicyFromEnv(); err == nil {
+		t.Error("unparsable protection marker accepted")
 	}
 }
 

@@ -1,0 +1,8 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Deployment result</h1>
+<div class="card"><p>Status: {{.Deploy.status}}{{with .Deploy.url}} — <a href="{{.}}">{{.}}</a>{{end}}{{with .Deploy.error}} ({{.}}){{end}}</p>
+<div class="actions"><a class="btn" href="/apps/{{.AppID}}/deploy">Back to deployment</a></div>
+</div>
+</div>
+{{end}}

@@ -10,6 +10,14 @@
 <button class="btn primary" type="submit">Start</button>
 </form>
 </div>
+{{if .Areas}}
+<div class="card">
+<h3>Studio areas</h3>
+<div class="grid3">
+{{range .Areas}}<div><a class="btn" href="{{.Href}}">{{.Label}}</a><p class="note">{{.Blurb}}</p></div>{{end}}
+</div>
+</div>
+{{end}}
 {{if .Conversations}}
 <div class="card">
 <h3>Recent conversations</h3>

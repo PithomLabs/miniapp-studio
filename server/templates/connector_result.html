@@ -1,7 +1,0 @@
-{{define "content"}}
-<h1>Connector result — {{.Name}}</h1>
-{{if .Unconfigured}}<p role="note">Connector integration is not configured; nothing was tested or stored.</p>
-{{else if .Error}}<p role="alert">{{.Error}}</p>
-{{else}}<p>Status: {{.Status}}</p>{{with .Message}}<p>{{.}}</p>{{end}}{{end}}
-<p><a href="/connectors/custom/new">Back to wizard</a> · <a href="/connectors">Connectors</a></p>
-{{end}}

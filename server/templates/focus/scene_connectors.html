@@ -1,0 +1,15 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Connectors</h1>
+<p class="sub">Organization connections the builder may use. Scoped authorization only — every connection carries an explicit endpoint policy.</p>
+{{if eq .status "unconfigured"}}
+<div class="card"><h3>Not configured</h3><p role="note">Fly connector integration is not configured. Connectors stay unavailable until production credentials exist; nothing here is live data.</p></div>
+{{else if .connections}}
+<div class="scroll"><table><thead><tr><th>ID</th><th>Provider</th><th>Type</th></tr></thead>
+<tbody>{{range .connections}}<tr><td class="mono">{{.id}}</td><td>{{.provider}}</td><td>{{.type}}</td></tr>{{end}}</tbody></table></div>
+{{else}}
+<div class="card"><h3>No connections configured</h3><p class="sub">Add a Custom API connection below, or configure organization connectors.</p></div>
+{{end}}
+<div class="actions"><a class="btn primary" href="/connectors/custom/new">New Custom API connection</a><a class="btn" href="/console?scene=connect">Builder view</a></div>
+</div>
+{{end}}

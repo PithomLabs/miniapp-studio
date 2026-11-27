@@ -1,0 +1,13 @@
+{{define "scene"}}
+<div class="scene">
+<h1 class="title">Connector result — {{.Name}}</h1>
+{{if .Unconfigured}}
+<div class="card"><h3>Not configured</h3><p role="note">Connector integration is not configured; nothing was tested or stored.</p></div>
+{{else if .Error}}
+<div class="card bad" role="alert"><h3>Failed</h3><p>{{.Error}}</p></div>
+{{else}}
+<div class="card good"><h3>Done</h3><p>Status: {{.Status}}</p>{{with .Message}}<p>{{.}}</p>{{end}}</div>
+{{end}}
+<div class="actions"><a class="btn" href="/connectors/custom/new">Back to wizard</a><a class="btn" href="/connectors">Connectors</a></div>
+</div>
+{{end}}

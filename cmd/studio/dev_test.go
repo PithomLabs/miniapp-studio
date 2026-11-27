@@ -115,7 +115,7 @@ func TestDevDSNMissing(t *testing.T) {
 func TestDevPolicyPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "b.json")
-	content := `{"project_id":"file-proj","branch_id":"file-br","endpoint_hosts":["ep-file.invalid"]}`
+	content := `{"project_id":"file-proj","branch_id":"file-br","branch_name":"dev","protected":false,"endpoint_hosts":["ep-file.invalid"]}`
 	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +131,8 @@ func TestDevPolicyPrecedence(t *testing.T) {
 	t.Setenv("NEON_PROJECT_ID", "env-proj")
 	t.Setenv("NEON_BRANCH_ID", "env-br")
 	t.Setenv("NEON_ENDPOINT_HOSTS", "ep-env.invalid")
+	t.Setenv("NEON_BRANCH_NAME", "env-branch")
+	t.Setenv("NEON_BRANCH_PROTECTED", "false")
 	pol, err = devPolicy("")
 	if err != nil || pol.ProjectID != "env-proj" {
 		t.Errorf("env policy: %+v %v", pol, err)

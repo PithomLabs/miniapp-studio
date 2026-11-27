@@ -22,7 +22,9 @@
 // Import discipline: production request paths (server, tools, runner)
 // must never import this package — enforced by
 // TestNoProdDbenvImport, which allows only the test harness, tests,
-// and the `studio dev` command (cmd/studio/dev.go, cmd/studio/bind.go).
+// the `studio dev` command surface (cmd/studio/dev.go, bind.go,
+// devserve.go), and the migrate boundary-enforcement point
+// (cmd/studio/migrate.go).
 package dbenv
 
 import (

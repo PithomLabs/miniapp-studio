@@ -15,6 +15,9 @@ type activityListIn struct {
 	Limit   int      `json:"limit"`
 	Cursor  string   `json:"cursor"`
 	Exclude []string `json:"exclude"`
+	// Tool restricts to one exact tool name (B4 incidents filter).
+	// Exact match only: no patterns, no substring surprises.
+	Tool string `json:"tool"`
 }
 
 // activityList exposes tenant-scoped framework audit events with keyset
@@ -47,6 +50,9 @@ func (d Deps) activityList(_ context.Context, call registry.ToolCall) (json.RawM
 			return nil, errInvalidArguments()
 		}
 	}
+	if len(in.Tool) > 128 {
+		return nil, errInvalidArguments()
+	}
 	// The listing excludes its own dispatch record: the runtime audits every
 	// invocation including this read, and showing the observer would make
 	// the empty state unreachable. The record itself still exists.
@@ -66,6 +72,12 @@ func (d Deps) activityList(_ context.Context, call registry.ToolCall) (json.RawM
 	if len(in.Exclude) > 0 {
 		query += ` AND NOT (tool = ANY($` + strconv.Itoa(next) + `::text[]))`
 		args = append(args, in.Exclude)
+		next++
+	}
+	if in.Tool != "" {
+		query += ` AND tool = $` + strconv.Itoa(next)
+		args = append(args, in.Tool)
+		next++
 	}
 	query += ` ORDER BY id DESC LIMIT ` + strconv.Itoa(limit)
 	rows, err := call.Tx.Query(call.Context, query, args...)

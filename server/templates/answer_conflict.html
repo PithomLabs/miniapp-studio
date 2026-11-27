@@ -1,8 +1,0 @@
-{{define "content"}}
-<h1>Question already answered</h1>
-<p>The question you answered is no longer open. Nothing was applied.</p>
-{{if .OpenQuestions}}<h2>Current open question</h2>
-{{range .OpenQuestions}}<p><strong>{{.kind}}:</strong> {{.body}}</p>{{end}}
-{{else}}<p>This build has no open questions.</p>{{end}}
-<p><a href="/conversations/{{.ConversationID}}">Back to conversation</a></p>
-{{end}}

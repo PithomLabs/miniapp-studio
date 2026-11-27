@@ -136,6 +136,17 @@ func ensureTestRole(ctx context.Context, owner *pgxpool.Pool) error {
 	return ensureRoleWithPassword(ctx, owner, TestRoleName, TestRolePassword)
 }
 
+// EnsureLiveRole creates the live application role when the cluster
+// lacks it. Unlike EnsureClusterRoles it carries no run-pattern gate
+// and never touches the test role: it exists for long-lived non-run
+// databases (the shared dev database), where the fixed test credential
+// must never be installed. Caller chooses the branch (dev verbs enforce
+// the production guard before connecting); the generated password is
+// discarded immediately — serve-init sets the real one explicitly.
+func EnsureLiveRole(ctx context.Context, owner *pgxpool.Pool) error {
+	return ensureRoleExists(ctx, owner, liveRoleName())
+}
+
 // ensureRoleExists creates the live role when the cluster lacks it, so
 // the Studio migrate gate (which requires existence) passes on fresh
 // test clusters. Creation-only: an existing password is never touched,

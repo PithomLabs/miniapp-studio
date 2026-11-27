@@ -123,7 +123,7 @@ func provision(ctx context.Context, f provisionFlags) error {
 		return fmt.Errorf("provision: operators file: %w", err)
 	}
 	fmt.Printf("provisioned tenant %q binding %q (operators file %s updated)\n", f.tenant, f.binding, f.operators)
-	fmt.Println("next: add the framework credential to the Miniapp keys file and grants file, then run: studio migrate")
+	fmt.Println("next: add the framework credential to the Miniapp keys file and grants file, then run: studio migrate --metadata-file <binding> --dsn-file <owner-dsn> (refuses production bindings; production promotion is manual-out-of-band until a governed path exists)")
 	return nil
 }
 

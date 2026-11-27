@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PithomLabs/miniapp-studio/dbenv"
 	"github.com/PithomLabs/miniapp-studio/store"
 )
 
@@ -35,6 +36,12 @@ func runMigrate(args []string) error {
 	pol, err := devPolicy(*metadataFile)
 	if err != nil {
 		return err
+	}
+	// migrate always resolves a binding (devPolicy fails closed), so the
+	// production guard engages unconditionally: raw migrate-against-prod
+	// must go through a future governed promotion path, never this verb.
+	if err := dbenv.RefuseProductionBranch(pol); err != nil {
+		return fmt.Errorf("migrate: %w", err)
 	}
 	if err := store.Migrate(context.Background(), dsn, pol); err != nil {
 		return redactDSN(err, dsn)
