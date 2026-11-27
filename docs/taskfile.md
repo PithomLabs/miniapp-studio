@@ -167,6 +167,38 @@ nothing to leak. There is deliberately no mint verb: minting
 happens only inside broker process memory (see
 [broker](broker.md)).
 
+## Invitation tasks (tenant onboarding)
+
+### `task dev:invite-create`
+Creates an invitation for `BINDING`, invited by `INVITED_BY`, in
+`TENANT` (no defaults). The raw token goes to a new 0600
+`TOKEN_FILE` (never printed); deliver it out-of-band, then delete
+the file. TTL via `-- --ttl-hours N` (default 168, max 720).
+
+### `task dev:invite-accept`
+Accepts the token in `TOKEN_FILE` (0600) into a session in one
+atomic transaction; the session token goes to a new 0600
+`SESSION_TOKEN_FILE`. Failures are uniform (no state oracle).
+
+### `task dev:invite-revoke`
+Revokes invitation `INVITE_ID` in `TENANT` immediately.
+
+### `task dev:invite-resend`
+Rotates an invitation: revokes the old token, issues a fresh one
+to `TOKEN_FILE` for the same binding.
+
+### `task dev:invite-list`
+Lists invitation metadata with live/consumed/revoked state. See
+[invitations](invitations.md).
+
+## Capability tasks
+
+### `task dev:capability-refresh`
+Refreshes the tenant's capability snapshot (tool registry +
+connector state) and prints the summary with staleness. Connector
+state honestly reports unconfigured from this verb (no manager
+attached). See [capabilities](capabilities.md).
+
 ## Serve tasks (local UI)
 
 ### `task dev:serve-init`

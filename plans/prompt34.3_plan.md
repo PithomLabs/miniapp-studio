@@ -58,13 +58,19 @@ Reuse, don't duplicate. Every security primitive already exists:
    tenant may invite/revoke/resend); acceptance binds the fixed invited
    binding. A future role hierarchy is explicitly out of scope. (Highest
    review-value decision.)
-2. **Acceptance mints a session via the existing path.** Accept (token
-   capability, unauthenticated endpoint) → `invitation_accept` provisions
-   the operator row and consumes the invite atomically → server calls
-   `store.Store.Create(tenant, binding)` exactly as `server/login.go` does.
-   Replays after success return a typed already-consumed response with no
-   new session and no state change (replay-safe; "idempotent" means safe
-   retry, not session replay).
+2. **Acceptance is one atomic transaction.** Accept (token capability,
+   unauthenticated endpoint) runs in a single pgx transaction:
+   `invitation_accept` (guard → operator upsert → consume) then
+   `session_create` for the returned `(tenant, binding)` — no
+   `store.Store.Create` round-trip outside the tx. If session creation
+   fails, the whole transaction rolls back and the invitation stays
+   consumable, so a failed accept is safely retryable and can never strand
+   a consumed invite without a session. Fallback (only if composition
+   proves impossible): a durable idempotent recovery keyed by invite id
+   that resumes session issuance without allowing token replay to mint
+   additional sessions. Replays after success return a typed
+   already-consumed response with no new session and no state change
+   (replay-safe; "idempotent" means safe retry, not session replay).
 3. **Enumeration resistance by uniform response.** One accept-failure
    message for bad/expired/revoked/consumed/foreign tokens; hash lookup
    only; no tenant-existence oracle in errors or timing beyond indexed
@@ -100,15 +106,18 @@ Reuse, don't duplicate. Every security primitive already exists:
    scope; down migration drops function + table. Mirror + parity updates.
 2. **Invitation service + verbs.** `store` or new `invite/` package:
    `Create` (session-authorized tenant operator; returns raw token once),
-   `Accept` (calls accept fn, then `Store.Create` session; uniform
-   failure), `Revoke`, `Resend` (rotate: revoke old hash + new token),
+   `Accept` (single tx: accept fn + session_create; uniform failure),
+   `Revoke`, `Resend` (rotate: revoke old hash + new token),
    `List` (metadata only). `dev invite-*` verbs with guard + redaction.
 3. **Invitation tests.** Authz (non-member cannot invite/revoke/resend;
    service-boundary, not UI), tenant isolation (cross-tenant token use
    fails uniformly), expiry, revocation, replay (no second session),
    resend rotation (old token dead), concurrent accept (exactly one
    session, one membership — race test), token canary (hash-only in rows;
-   no raw token in errors/logs), idempotent retry safety.
+   no raw token in errors/logs), idempotent retry safety,
+   failure-injection (forced session_create failure rolls back
+   consumption: invite stays valid, no operator row, no session; retry
+   then succeeds).
 4. **Capability refresh contract + migration 000030.** Table
    `studio.capability_snapshots(tenant_id PK, snapshot JSONB,
    refreshed_at, provenance JSONB, complete BOOL)`; RLS + grants + mirror

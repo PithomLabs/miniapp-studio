@@ -31,6 +31,11 @@ vars:
   TENANT: ''
   PROVIDER: ''
   REFRESH_FILE: ''
+  BINDING: ''
+  INVITED_BY: ''
+  INVITE_ID: ''
+  TOKEN_FILE: ''
+  SESSION_TOKEN_FILE: ''
 
 tasks:
   bind:
@@ -94,6 +99,92 @@ tasks:
         msg: "Pass TENANT=<id> (no default)"
     cmds:
       - "{{.STUDIO}} dev broker-leases --tenant {{.TENANT}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  invite-create:
+    desc: Create a tenant invitation (token to TOKEN_FILE 0600, never printed; TENANT/BINDING/INVITED_BY/TOKEN_FILE overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.BINDING}}"
+        msg: "Pass BINDING=<id> (no default)"
+      - sh: test -n "{{.INVITED_BY}}"
+        msg: "Pass INVITED_BY=<binding> (no default)"
+      - sh: test -n "{{.TOKEN_FILE}}"
+        msg: "Pass TOKEN_FILE=<new 0600 path> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev invite-create --tenant {{.TENANT}} --binding {{.BINDING}} --invited-by {{.INVITED_BY}} --token-file {{.TOKEN_FILE}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  invite-accept:
+    desc: Accept an invitation token into a session (TOKEN_FILE in, SESSION_TOKEN_FILE out, both 0600; overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -f "{{.TOKEN_FILE}}"
+        msg: "Pass TOKEN_FILE=<0600 path holding the invitation token>"
+      - sh: test -n "{{.SESSION_TOKEN_FILE}}"
+        msg: "Pass SESSION_TOKEN_FILE=<new 0600 path> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev invite-accept --token-file {{.TOKEN_FILE}} --session-token-file {{.SESSION_TOKEN_FILE}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  invite-revoke:
+    desc: Revoke an invitation (TENANT/INVITE_ID overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.INVITE_ID}}"
+        msg: "Pass INVITE_ID=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev invite-revoke --tenant {{.TENANT}} --id {{.INVITE_ID}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  invite-resend:
+    desc: Rotate an invitation token (new token to TOKEN_FILE 0600; TENANT/INVITE_ID/TOKEN_FILE overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.INVITE_ID}}"
+        msg: "Pass INVITE_ID=<id> (no default)"
+      - sh: test -n "{{.TOKEN_FILE}}"
+        msg: "Pass TOKEN_FILE=<new 0600 path> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev invite-resend --tenant {{.TENANT}} --id {{.INVITE_ID}} --token-file {{.TOKEN_FILE}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
+
+  invite-list:
+    desc: List invitation metadata for a tenant (TENANT overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev invite-list --tenant {{.TENANT}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
+  capability-refresh:
+    desc: Refresh a tenant capability snapshot and print the summary (TENANT overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev capability-refresh --tenant {{.TENANT}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}} {{.CLI_ARGS}}"
 
   setup:
     desc: Neon preflight for the dev branch (metadata, endpoint binding, TLS, live version; provisions nothing)

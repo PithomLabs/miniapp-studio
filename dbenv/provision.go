@@ -204,6 +204,7 @@ var studioTables = []string{
 	"artifact_blobs", "artifact_verifications", "artifact_test_runs",
 	"checkpoints", "sprite_lifecycle_receipts",
 	"broker_credentials", "broker_leases",
+	"invitations", "capability_snapshots",
 }
 
 // frameworkTables mirrors the 000002 app.* DML grant set.
@@ -268,6 +269,7 @@ func grantTestFunctionExec(ctx context.Context, pool *pgxpool.Pool, role string)
 		`GRANT EXECUTE ON FUNCTION studio.session_lookup(TEXT) TO ` + role,
 		`GRANT EXECUTE ON FUNCTION studio.session_create(TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ) TO ` + role,
 		`GRANT EXECUTE ON FUNCTION studio.session_revoke(TEXT) TO ` + role,
+		`GRANT EXECUTE ON FUNCTION studio.invitation_accept(TEXT) TO ` + role,
 	} {
 		if _, err := conn.Exec(ctx, s); err != nil {
 			return fmt.Errorf("dbenv: grant: %w", err)

@@ -39,7 +39,7 @@ import (
 
 func runDev(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases> [flags]")
+		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|capability-refresh> [flags]")
 	}
 	switch args[0] {
 	case "bind":
@@ -74,8 +74,20 @@ func runDev(args []string) error {
 		return runDevBrokerRevoke(args[1:], os.Stdout)
 	case "broker-leases":
 		return runDevBrokerLeases(args[1:], os.Stdout)
+	case "invite-create":
+		return runDevInviteCreate(args[1:], os.Stdout)
+	case "invite-accept":
+		return runDevInviteAccept(args[1:], os.Stdout)
+	case "invite-revoke":
+		return runDevInviteRevoke(args[1:], os.Stdout)
+	case "invite-resend":
+		return runDevInviteResend(args[1:], os.Stdout)
+	case "invite-list":
+		return runDevInviteList(args[1:], os.Stdout)
+	case "capability-refresh":
+		return runDevCapabilityRefresh(args[1:], os.Stdout)
 	default:
-		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases)", args[0])
+		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|capability-refresh)", args[0])
 	}
 }
 
