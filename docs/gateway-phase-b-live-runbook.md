@@ -12,11 +12,30 @@ see §2); all `studio`/`gateway` commands run from `$REPO` unless noted.
 
 ## §0 How to use this runbook
 
+0. Confirm the authorization class of every step in §0b before running
+   it. Read-only steps run under the Part 2 GO; each C-class step needs
+   its own explicit owner GO at execution time.
 1. Collect the §1 decisions first. Nothing proceeds without all of them.
 2. Work top to bottom; each section ends with evidence to record.
 3. On any unexpected output, go to §12 (failure interpretation) before
    retrying or improvising.
 4. Finish with §13 (cleanup or explicit retention) no matter what.
+
+## §0b Authorization map (read-only vs consequential)
+
+| Class | Steps | Authorization |
+|---|---|---|
+| R (read-only) | §2 pins/tree, §3 gates, §4 build, §5 env assembly, §6 verify-only reads (`info`, `exec` reads, `status`), §7 discovery reads, §7a/§7b reads, §9 route probes, §11 observations | Covered by the Part 2 GO; stop on any surprise per §12 |
+| C0 | Fly-hosted Studio deployment (D3, owner-established outside this runbook) | Prerequisite: must exist + pass §5b before §6 |
+| C1 | §6 provision (creates Sprite, installs service, writes keys) | Separate owner GO at execution |
+| C2 | §7/D5 package installation on the builder | Separate owner GO at execution |
+| C3 | §8 OAuth ceremony (Fly grants) | Separate owner GO at execution |
+| C4 | §8b provider key entry (OpenRouter credential) | Separate owner GO at execution |
+| C5 | §10 assign + §11 resume turns (live agent runs, inference spend) | Separate owner GO at execution |
+| C6 | §13 destroy (irreversible) or D4 retention | Separate owner GO at execution |
+
+§6.5 upgrade stays PROHIBITED live until N2 closes (§6.5) — no GO
+may authorize it. A GO for one class never covers another.
 
 ## §1 Owner decisions (recorded)
 
@@ -24,7 +43,7 @@ see §2); all `studio`/`gateway` commands run from `$REPO` unless noted.
 |---|---|---|---|
 | D1 | Fly organization for builders | `isagani-mendoza` (exact slug; no new org) | DECIDED |
 | D2 | Model provider + auth for OpenCode | Primary `opencode` (default `deepseek-v4.1-flash-free`, alt `mimo-v2.6-flash-free`); OpenRouter same-model fallback; owner key | DECIDED (§8b) |
-| D3 | Studio callback reachability | (b) Fly-hosted Studio through Fly Proxy | STRATEGY DECIDED (deployment + callback verification outstanding) |
+| D3 | Studio callback reachability | (b) Fly-hosted Studio through Fly Proxy | STRATEGY DECIDED (deployment outstanding; verified by §5b pre-provision + §9 pre-agent — both must pass, no tunnel substitution without a new decision) |
 | D4 | Builder retention after proof | destroy to zero | DEFAULT ACCEPTED |
 | D5 | System packages (node≥20, bun, git, curl) | preinstall in image, or apt-install live | AT EXECUTION (§7 discovery) |
 | D6 | Pin drift | hold existing pins; any drift needs STOP + separate re-pin decision | DECIDED |
@@ -40,8 +59,9 @@ the assign-payload `model` field; no automatic failover exists.
 D3 note: the gateway POSTs callbacks to Studio's `/gw/v1/callback`, so
 Studio must be reachable FROM the sprite during live proofs. There
 is no third path that doesn't weaken the proof — do not substitute
-a request-catcher. §9 gates readiness (§5 env, listener table,
-`/readyz`, Builder-side round-trip).
+a request-catcher. §5b gates deployment readiness (record, listener,
+`/readyz`) before any provisioning; §9 proves the callback route
+(400 + 401 probes) before any agent run.
 
 ## §2 Pins and tree state (re-verify, record, do not float)
 
@@ -94,14 +114,34 @@ Record: full command outputs + `git status` in the evidence.
 
 ## §3 Pre-live gates (prove the tree before touching live infra)
 
+Class R. Full-suite live verification stays DEFERRED to the
+pre-demo gate (Card 001 decision) — this section is the smallest
+sufficient B2 gate, not the full suite:
+
 ```bash
 gofmt -l .                # expect: no output
 go vet ./...
 go build ./...
-go test -p 1 ./...        # expect: all ok (needs TEST_DATABASE_URL)
+env -u TEST_DATABASE_URL go test -p 1 ./...   # repo-local: live tests skip honestly, expect: all ok
+command -v sprite         # expect: a path (CLI presence; login state is owner-held)
 ```
 
-Record: suite tail. Any failure stops the run.
+The `env -u` is load-bearing: an exported `TEST_DATABASE_URL`
+would turn this gate into a live full-suite run. Record the suite
+tail + skip count. Any failure stops the run.
+
+Live DB/migration/privilege surface: cite Card 001 (seven-test
+Neon gate GREEN at commit `0c027ae`, `test-run-card001.log`,
+468.5s) instead of re-running — IF the §2 HEAD equals `0c027ae`
+with a reconciled tree. Otherwise re-run exactly:
+
+```bash
+set -o pipefail
+time task dev:test -- -- -run 'TestRoleAttributes|TestPrivilegeParity|TestStudioLookupSetRepair|TestMigrationDownUpBounded|TestPoolResetsTenantSetting|TestPoolDiscardsUnresettable|TestTenantResetHookTimesOut' -timeout 15m -v -count=1 2>&1 | tee test-run-card002-gate.log
+```
+
+Expect: all seven PASS. Any red stops the run (triage at root
+cause; no live proofs on a red gate).
 
 ## §4 Build the gateway binary
 
@@ -155,11 +195,48 @@ no auto-recharge, bounded attempts, per-build usage evidence)
 must be in place before any fallback use.
 
 D3 note: Fly-hosted Studio deployment itself is owner-established
-(no in-tree Studio-on-Fly deploy path exists); §9's listener
-table, `/readyz` gate, and Builder-side round-trip verify the
-result, not the deployment procedure.
+(no in-tree Studio-on-Fly deploy path exists); §5b verifies the
+deployed result before any provisioning, and §9 proves the
+callback route before any agent run. Neither section deploys.
 
-## §6 Provision the builder
+## §5b Studio readiness gate (C0 prerequisite — must pass BEFORE §6)
+
+Class R (reads against owner-established infra). Provisioning a
+builder whose callbacks go nowhere proves nothing — do not run §6
+until every line below passes. No tunnel substitution: D3 decided
+Fly-hosted, and only a new owner decision changes that.
+
+1. Record the deployment: Fly app name, image revision/commit,
+   public base URL (`<base-url>` below), internal port.
+2. Studio serves with the Fly Proxy listener (the loopback
+   default receives nothing behind the proxy — this fails
+   silently at the network layer):
+
+   | D3 deployment | Required `STUDIO_LISTEN` |
+   |---|---|---|
+   | (b) Fly Proxy (decided) | `0.0.0.0:<internal_port>` |
+   | (a) Owner machine + tunnel (fallback, needs a new decision) | `127.0.0.1:8080` (default) |
+   | Fly private 6PN (not selected) | `fly-local-6pn:<port>` |
+
+   ```bash
+   go run ./cmd/studio serve   # takes no flags; reads STUDIO_LISTEN
+   ```
+3. Prove readiness (`/readyz`, not just `/healthz`: the former
+   checks database connectivity and exact schema version and
+   answers 503 `{"status":"unavailable"}` while migrating,
+   unreachable, dirty, or behind; the latter only proves the
+   handler responds):
+
+   ```bash
+   curl <base-url>/healthz   # expect: HTTP 200 {"status":"ok",...}
+   curl <base-url>/readyz    # expect: HTTP 200 {"status":"ready"}
+   ```
+
+Record: app name, revision, base URL, listener, both outputs.
+Anything but double-200 stops the run (C0 unmet — fix the
+deployment, do not provision against an unready Studio).
+
+## §6 Provision the builder (C1 provision + R verification)
 
 Pick a build first: in the Studio UI, open any conversation and send one
 message (creates conversation + build `BUILD`; record both ids).
@@ -169,9 +246,10 @@ go run ./cmd/studio gateway provision --tenant '<TENANT>' --build '<BUILD>' \
   --gateway-binary /tmp/studio-gateway --studio-url '<STUDIO_URL>'
 ```
 
-`<STUDIO_URL>` is the D3 decision (tunnel or Fly-hosted base URL —
-the provisioned service boots with it as its callback target; without
-it the service cannot start, so there is no default).
+`<STUDIO_URL>` is the §5b-verified Fly-hosted base URL — the
+provisioned service boots with it as its callback target; without
+it the service cannot start, so there is no default. (Class C1:
+this command needs its own owner GO.)
 
 Expected: pretty JSON `{"build_id": ..., "sprite_name":
 "studio-bld-<t8>-<a8>", "url": "https://..."}`. Record it verbatim.
@@ -255,7 +333,7 @@ deliberate draining of agent runs (never to bypass the prohibition
 above). After upgrade, re-run §6 verification (service
 running, keys present) and §9 (status answers).
 
-## §7 Privilege and package discovery (honest unknowns — observe, decide)
+## §7 Privilege and package discovery (R discovery + C2 install)
 
 Run and record verbatim:
 
@@ -353,7 +431,7 @@ uid/gid/groups and NOT the gateway/service uid; (b) "try to read
 permission-denied failure. Record transcripts verbatim and mark the
 evidence agent-reported.
 
-## §8 OAuth ceremony (owner-driven, P-E1 → P-E2 → P-E3 ladder)
+## §8 OAuth ceremony (C3 — owner-driven, P-E1 → P-E2 → P-E3 ladder)
 
 Per the merged amendment §E. Attempt in order; record which rung worked:
 
@@ -374,7 +452,7 @@ Per the merged amendment §E. Attempt in order; record which rung worked:
 Record: rung used, grant parameters, `get_fly_context` output (redact
 any token material before pasting into evidence).
 
-## §8b Provider authentication ceremony (OpenRouter + OpenCode)
+## §8b Provider authentication ceremony (C4 — OpenRouter + OpenCode)
 
 Owner-driven, after §7b identity proofs, before §10 (no agent run
 may precede it — §10 is the first model call). No Gateway code
@@ -476,44 +554,33 @@ proof unless continued use is explicitly authorized, never
 use a personal/broad key. Record the key's spending limit
 and revocation plan in the evidence; do not record the key.
 
-Studio must be serving (D3) and reachable from the Builder Sprite
-at the D3 callback URL chosen in §1. With the §5 environment
-loaded, start it:
+Studio readiness was proven pre-provision in §5b; the callback
+route proof runs in §9 after this ceremony. Do not run any agent
+turn before §9 passes.
+
+## §9 Callback route proof (must pass BEFORE §10)
+
+Class R (rejected probes change no state — the 400/401 paths
+ingest nothing). Uses the §5b base URL, the §6 sprite + build,
+and on-sprite `curl` (a D5 dependency, present after §7).
+
+Probe 1 — route + handler (bare POST carries no envelope, so the
+handler answers 400, not 401):
 
 ```bash
-go run ./cmd/studio serve
+sprite exec -s '<SPRITE>' -- curl -s -o /dev/null -w "%{http_code}" -X POST <base-url>/gw/v1/callback  # expect: 400
 ```
 
-The command takes no flags; it listens on `STUDIO_LISTEN`. The
-required listener depends on the D3 deployment — the default is
-only correct for one of them:
-
-| D3 deployment      | Required `STUDIO_LISTEN` |
-| ------------------ | ------------------------ |
-| Owner machine + tunnel | `127.0.0.1:8080` (default) |
-| Fly Proxy          | `0.0.0.0:<internal_port>` (Fly requires a wildcard bind) |
-| Fly private 6PN    | `fly-local-6pn:<port>` (direct private access) |
-
-Set `STUDIO_LISTEN` accordingly before starting (a loopback
-listener behind Fly Proxy receives nothing — this fails
-silently at the network layer, so get it right here). For D3
-option (a), forward the local listen port through the owner's
-tunnel; for (b), use the Fly-hosted base URL.
-
-Readiness requires `/readyz`, not just `/healthz`: the former
-checks database connectivity and schema version (503 while
-migrating or unreachable); the latter only proves the handler
-responds. Confirm both, then prove the actual callback route
-from the Builder side — an unsigned POST must reach Studio
-and be rejected with 401 (route proven, auth enforced):
+Probe 2 — auth enforced (well-formed envelope, valid build id,
+bogus everything else — parses, resolves keys, fails Verify):
 
 ```bash
-curl <base-url>/readyz                                    # expect: HTTP 200 {"status":"ready"}
-sprite exec -s '<SPRITE>' -- curl -s -o /dev/null -w "%{http_code}" -X POST <base-url>/gw/v1/callback  # expect: 401
+sprite exec -s '<SPRITE>' -- curl -s -o /dev/null -w "%{http_code}" -X POST <base-url>/gw/v1/callback -H 'Content-Type: application/json' -d "{\"build_id\":\"<BUILD>\"}"  # expect: 401
 ```
 
-Record the base URL, both results, and the listener used —
-every step from here depends on them. The full signed
+Anything else stops the run (§12): 404 = wrong base URL or a
+Studio too old for the route; 503 = Studio keys unconfigured;
+timeout/refused = the D3 path is broken. The full signed
 round-trip proof completes in §10 when the `agent.started`
 callback lands in the Studio conversation stream. Then:
 
@@ -524,7 +591,7 @@ go run ./cmd/studio gateway command --tenant '<TENANT>' --build '<BUILD>' --cmd 
 Expected: JSON with `state: running`, `agent_alive`, outbox depths.
 Record verbatim + wall-clock latency (first command may absorb a wake).
 
-## §10 No-op turn (supervised agent proof)
+## §10 No-op turn (C5 — supervised agent proof)
 
 Send the assignment (exact prompt — do not embellish):
 
@@ -552,7 +619,7 @@ go run ./cmd/studio gateway command --tenant '<TENANT>' --build '<BUILD>' --cmd 
 Expected: 400 (empty manifest refused) — proves the path is reachable
 and strict. (Real artifact fetch is exercised in Phase D.)
 
-## §11 Sleep, wake, and resume observation
+## §11 Sleep, wake, and resume observation (C5 resume + R observations)
 
 1. Note the gateway service PID + agent session ref (status command),
    and record the live agent PIDs (F-R2/N5 — needed for the step 5
@@ -623,14 +690,19 @@ replace reports with observations.
 | continue: 409 session is terminal | done/cancelled never resume | start a new build if needed |
 | command: 409 indeterminate | crash before completion | recover with continue as a new turn, never retry the id |
 | No callbacks in Studio | deliverer failing OR Studio unreachable | check gateway logs + D3 path; record |
+| §5b: `/readyz` ≠ 200 | Studio unready (migrating, unreachable, dirty, or behind) | fix the deployment (C0 unmet); do not provision |
+| §9 probe 1 ≠ 400 | route/handler not reached | 404 = wrong base URL or Studio too old; timeout/refused = D3 path broken; fix, re-probe |
+| §9 probe 2 ≠ 401 | auth path unexpected | 503 = Studio keys unconfigured (check org secret); 404 = unknown build (wrong BUILD id); fix, re-probe |
 | status: outbox_failed > 0 | callbacks parked terminally | inspect per build (`gateway command --cmd outbox_inspect`), fix the cause, requeue (`gateway command --cmd outbox_requeue --payload '{"item_id":"..."}'`); record ids + acks |
 | status: degraded true | pump lost callbacks (sick outbox) | treat build as backlogged, not complete; diagnose disk; Phase C reconciles; record |
 | agent run hangs, no events | gateway-side (stderr wedge impossible — supervisor drains) or prompt/agent issue | check gateway status detail (corrupt/truncated tallies) + service logs first; then cancel via CLI, capture transcript, report |
 
-## §13 Cleanup (always runs)
+## §13 Cleanup (C6 — always runs)
 
 ```bash
-# Retire via sprite CLI (exact names from §6 output):
+# Retire via sprite CLI (exact names from §6 output).
+# Class C6: needs its own owner GO. The CLI prompts for
+# confirmation — confirm deliberately; do NOT add --force.
 sprite destroy -s '<SPRITE>'
 sprite list | grep '<SPRITE>' ; echo "expect: no match (exit 1)"
 ```
@@ -645,7 +717,11 @@ builders).
 Timings (provision, install, first wake, no-op turn, sleep observes),
 full transcripts (redacted), D1–D6 resolutions, warm/cold observations,
 any §12 rows hit, cleanup proof or retention record, and every deviation
-from this runbook with reasons.
+from this runbook with reasons. Always include: the §2 pin/tree record,
+the §3 gate outputs (or the Card 001 citation with HEAD), the §5b
+deployment record (app, revision, base URL, listener, both health
+outputs), the §9 probe pair, and the per-class GO record (which C-class
+steps ran under which explicit authorization).
 
 ## §15 Phase B live-segment backlog (must close before Phase B exit)
 
