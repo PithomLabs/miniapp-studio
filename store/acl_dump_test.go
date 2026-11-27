@@ -9,23 +9,29 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dumpFunctionACLs renders every studio/app function with its owner and
-// full grantee list (grantee=privilege/grantor), plus default ACLs and
-// the runtime roles' superuser flags. A privilege mismatch fails WITH
-// its mechanism instead of a bare boolean. Secret-free: ACLs name
-// roles, never credentials.
+// dumpFunctionACLs renders every studio/app function with its RAW proacl
+// (ground truth: no explode, no joins) plus a decoded grantee list,
+// then cross-checks name resolution (regprocedure OID vs catalog OID,
+// privilege by OID vs by text). A privilege mismatch fails WITH its
+// mechanism instead of a bare boolean. Secret-free: ACLs name roles,
+// never credentials.
 func dumpFunctionACLs(ctx context.Context, owner *pgxpool.Pool) string {
 	var b strings.Builder
 	rows, err := owner.Query(ctx, `
 SELECT n.nspname || '.' || p.proname || '(' ||
        pg_get_function_identity_arguments(p.oid) || ')' AS fn,
+       p.oid AS foid,
        o.rolname AS fowner,
-       COALESCE((SELECT string_agg(g.rolname || '=' || x.privilege_type ||
-                                   '/' || gr.rolname, ',' ORDER BY 1)
+       COALESCE(p.proacl::text, '(NULL=defaults)') AS raw,
+       COALESCE((SELECT string_agg(
+                   COALESCE(g.rolname, 'PUBLIC(' || x.grantee::text || ')') || '=' ||
+                   x.privilege_type || '/' ||
+                   COALESCE(gr.rolname, 'grantor(' || x.grantor::text || ')'),
+                   ',' ORDER BY 1)
                  FROM aclexplode(p.proacl) x
-                 JOIN pg_roles g ON g.oid = x.grantee
-                 JOIN pg_roles gr ON gr.oid = x.grantor),
-                'NULL=defaults(owner+X,PUBLIC+X)') AS acl
+                 LEFT JOIN pg_roles g ON g.oid = x.grantee
+                 LEFT JOIN pg_roles gr ON gr.oid = x.grantor),
+                '(no entries)') AS acl
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 JOIN pg_roles o ON o.oid = p.proowner
@@ -35,16 +41,68 @@ ORDER BY 1`)
 		return fmt.Sprintf("acl dump query: %v", err)
 	}
 	for rows.Next() {
-		var fn, fowner, acl string
-		if err := rows.Scan(&fn, &fowner, &acl); err != nil {
+		var fn, fowner, raw, acl string
+		var foid uint32
+		if err := rows.Scan(&fn, &foid, &fowner, &raw, &acl); err != nil {
 			b.WriteString(fmt.Sprintf("acl scan: %v\n", err))
 			break
 		}
-		fmt.Fprintf(&b, "fn %s owner=%s acl=[%s]\n", fn, fowner, acl)
+		fmt.Fprintf(&b, "fn %s oid=%d owner=%s raw=%s decoded=[%s]\n",
+			fn, foid, fowner, raw, acl)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(&b, "acl rows: %v\n", err)
+	}
+	// Resolution cross-check: does the text name the tests use resolve
+	// to the cataloged function, and does the privilege answer depend
+	// on the reference form?
+	var regOID uint32
+	if err := owner.QueryRow(ctx,
+		`SELECT 'studio.operator_upsert(text,text,boolean)'::regprocedure::oid`,
+	).Scan(&regOID); err != nil {
+		fmt.Fprintf(&b, "regprocedure resolve: %v\n", err)
+	} else {
+		var catOID uint32
+		if err := owner.QueryRow(ctx,
+			`SELECT p.oid FROM pg_proc p
+			 JOIN pg_namespace n ON n.oid = p.pronamespace
+			 WHERE n.nspname = 'studio' AND p.proname = 'operator_upsert'`,
+		).Scan(&catOID); err != nil {
+			fmt.Fprintf(&b, "catalog oid: %v\n", err)
+		} else {
+			fmt.Fprintf(&b, "operator_upsert regprocedure-oid=%d catalog-oid=%d match=%v\n",
+				regOID, catOID, regOID == catOID)
+		}
+		var byText, byOID bool
+		if err := owner.QueryRow(ctx,
+			`SELECT has_function_privilege('studio_app',
+				'studio.operator_upsert(text,text,boolean)', 'EXECUTE')`,
+		).Scan(&byText); err != nil {
+			fmt.Fprintf(&b, "priv by text: %v\n", err)
+		}
+		if err := owner.QueryRow(ctx,
+			`SELECT has_function_privilege('studio_app', $1::oid, 'EXECUTE')`, regOID,
+		).Scan(&byOID); err != nil {
+			fmt.Fprintf(&b, "priv by oid: %v\n", err)
+		} else {
+			fmt.Fprintf(&b, "priv by-text=%v by-oid=%v\n", byText, byOID)
+		}
+	}
+	var nspACL, dbACL string
+	if err := owner.QueryRow(ctx,
+		`SELECT COALESCE(nspacl::text, '(NULL)') FROM pg_namespace WHERE nspname = 'studio'`,
+	).Scan(&nspACL); err != nil {
+		fmt.Fprintf(&b, "schema acl: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "schema studio raw-acl=%s\n", nspACL)
+	}
+	if err := owner.QueryRow(ctx,
+		`SELECT COALESCE(datacl::text, '(NULL)') FROM pg_database WHERE datname = current_database()`,
+	).Scan(&dbACL); err != nil {
+		fmt.Fprintf(&b, "db acl: %v\n", err)
+	} else {
+		fmt.Fprintf(&b, "database raw-acl=%s\n", dbACL)
 	}
 	rows, err = owner.Query(ctx, `
 SELECT COALESCE(d.defaclnamespace::regnamespace::text, '(global)') AS scope,
@@ -117,7 +175,7 @@ SELECT 'owns schema ' || n.nspname
 FROM pg_namespace n
 JOIN pg_roles r ON r.oid = n.nspowner WHERE r.rolname = $1
 UNION ALL
-SELECT 'shdepend ' || d.deptype || ' on ' || d.classid::regclass ||
+SELECT 'shdepend ' || d.deptype::text || ' on ' || d.classid::regclass ||
        ' obj ' || d.objid || '/' || d.objsubid
 FROM pg_shdepend d
 JOIN pg_roles r ON r.oid = d.refobjid

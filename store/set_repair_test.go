@@ -55,8 +55,8 @@ func TestStudioLookupSetRepair(t *testing.T) {
 				t.Errorf("cleanup drop %s: %v", fn, err)
 			}
 		}()
-		if _, err := env.owner.Exec(ctx, `REVOKE CREATE ON SCHEMA studio FROM `+probe); err != nil {
-			t.Logf("cleanup: revoke schema CREATE: %v", err)
+		if _, err := env.owner.Exec(ctx, `REVOKE ALL ON SCHEMA studio FROM `+probe); err != nil {
+			t.Logf("cleanup: revoke schema grants: %v", err)
 		}
 		if _, err := env.owner.Exec(ctx, `DROP OWNED BY `+probe); err != nil {
 			t.Logf("cleanup: second DROP OWNED: %v", err)
@@ -122,6 +122,10 @@ func TestStudioLookupSetRepair(t *testing.T) {
 	// 6. Ownership transfer now succeeds.
 	mustExec(`CREATE FUNCTION `+fn+`() RETURNS INT LANGUAGE sql AS $$ SELECT 1 $$`, "create scratch fn")
 	mustExec(`GRANT CREATE ON SCHEMA studio TO `+probe, "probe schema CREATE")
+	// USAGE rides with CREATE: without it the probe cannot resolve its
+	// own function for the ownership-transfer proof or the SET ROLE
+	// cleanup drop (live 42501 "permission denied for schema studio").
+	mustExec(`GRANT USAGE ON SCHEMA studio TO `+probe, "probe schema USAGE")
 	mustExec(`ALTER FUNCTION `+fn+`() OWNER TO `+probe, "transfer ownership")
 
 	// 7. The application role cannot SET ROLE to the probe.

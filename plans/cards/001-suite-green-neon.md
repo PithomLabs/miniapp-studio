@@ -112,3 +112,25 @@ every realistic theory; worst case it fails with the mechanism attached. Repo-lo
 **Next:** owner pushes, reviews, and on GO re-runs the identical seven-test command with one intact log.
 Expected: SetRepair green; privilege checks red-WITH-mechanism (ACL dump names the grantor) — then one final
 targeted fix and one final green run. Two live runs to gate-green, each decisive; no full suite.
+
+**Instrumented run (2026-11-27 ~23:18 +08:00, store 467s). Still red, now with mechanism. Three decisive facts:**
+- SetRepair cleanup: `DROP OWNED BY probe → 42501 permission denied` (ADMIN-FALSE theory CONFIRMED live —
+  DROP OWNED needs what the canonical repair took away); `SET ROLE probe` SUCCEEDED but the drop then failed
+  `42501 permission denied for schema studio` (probe holds CREATE but not USAGE — CREATE does not imply
+  USAGE). Deps dump errored on an uncast `"char"` (`d.deptype ||` — dump bug, fixed with `::text`).
+- RoleAttributes dump: `probe_transfer_fn` survives with NULL-default ACL (PUBLIC EXECUTE) — the line-260
+  "no PUBLIC execute" failure is SetRepair's leftover polluting the shared DB. CONFIRMED.
+- Privilege paradox narrowed: the four migration functions show materialized owner-only ACLs yet
+  `has_function_privilege` returns TRUE. pgx source read (v5.13.0 `MultiResultReader.receiveMessage`:
+  every ErrorResponse overwrites `mrr.err`, drained by `Close`) proves mid-batch statement errors SURFACE
+  as the last error — so the silent-42501 theory is DEAD and every GRANT/REVOKE statement SUCCEEDED,
+  which promotes the dump itself to prime suspect (INNER JOINs silently drop PUBLIC grantee oid 0 and any
+  unresolvable grantor).
+**Second slice (this commit):** dump shows RAW `proacl::text` ground truth + LEFT-JOIN decode + regprocedure
+OID vs catalog OID + privilege-by-text vs by-OID + raw schema/db ACLs; probe gets USAGE with CREATE;
+cleanup revokes ALL schema grants. Predictions for the confirm run — P1: SetRepair GREEN; P2: line-260 GREEN
+(probe fn gone), lines 264/276 still RED; P3: parity still RED with raw ACL ending it (PUBLIC `=X` present →
+hunt the grantor; absent with by-OID TRUE → environment anomaly with proof); P4: cycle + pool×2 + hook GREEN
+with `--- PASS` lines captured. If P3 shows PUBLIC, the repair slice is forward 000027 (SET ROLE
+studio_lookup → REVOKE PUBLIC → restore intended grants → RESET ROLE) plus an adapter-hardening decision;
+000027 is deliberately NOT in this slice — the confirm run must observe the hole, not the repair.
