@@ -284,6 +284,9 @@ func TestRoleAttributes(t *testing.T) {
 		check(`SELECT relrowsecurity FROM pg_class WHERE relnamespace = 'studio'::regnamespace AND relname = '`+table+`'`,
 			true, "RLS enabled on "+table)
 	}
+	if t.Failed() {
+		t.Logf("function ACL state:\n%s", dumpFunctionACLs(ctx, env.owner))
+	}
 }
 
 // TestFrameworkTablesReachableAsApp proves the F2 correction: the granted

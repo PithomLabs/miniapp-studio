@@ -98,4 +98,7 @@ func TestPrivilegeParity(t *testing.T) {
 		t.Error("test role lacks CONNECT on the run database")
 	}
 	t.Logf("live CONNECT on run database: %v (informational; tests never dial it)", liveConn)
+	if t.Failed() {
+		t.Logf("function ACL state:\n%s", dumpFunctionACLs(ctx, env.owner))
+	}
 }

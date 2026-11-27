@@ -25,13 +25,45 @@ func TestStudioLookupSetRepair(t *testing.T) {
 	probe := fmt.Sprintf("studio_probe_%d_%d", os.Getpid(), time.Now().UnixNano())
 	fn := "studio.probe_transfer_fn"
 	cleanup := func() {
-		// DROP OWNED first: the probe owns the scratch function AND
-		// holds the schema CREATE grant, and DROP ROLE refuses while
-		// either exists. Works because the owner holds probe membership
-		// (granted by the test itself).
-		_, _ = env.owner.Exec(ctx, `DROP OWNED BY `+probe)
+		// The canonical repair leaves the owner holding SET (not
+		// ADMIN) on the probe, so object drops run AS the probe over
+		// a dedicated connection, with RESET guaranteed before the
+		// connection returns to the pool. Every step surfaces its
+		// error: the previous version swallowed the DROP OWNED
+		// result, hiding the decisive evidence on failure.
+		if _, err := env.owner.Exec(ctx, `DROP OWNED BY `+probe); err != nil {
+			t.Logf("cleanup: DROP OWNED BY %s: %v", probe, err)
+		}
+		func() {
+			conn, err := env.owner.Acquire(ctx)
+			if err != nil {
+				t.Errorf("cleanup acquire: %v", err)
+				return
+			}
+			defer conn.Release()
+			defer func() {
+				// Never return a role-switched connection.
+				if _, err := conn.Exec(ctx, `RESET ROLE`); err != nil {
+					t.Errorf("cleanup RESET ROLE: %v", err)
+				}
+			}()
+			if _, err := conn.Exec(ctx, `SET ROLE `+probe); err != nil {
+				t.Errorf("cleanup SET ROLE %s: %v", probe, err)
+				return
+			}
+			if _, err := conn.Exec(ctx, `DROP FUNCTION IF EXISTS `+fn+`()`); err != nil {
+				t.Errorf("cleanup drop %s: %v", fn, err)
+			}
+		}()
+		if _, err := env.owner.Exec(ctx, `REVOKE CREATE ON SCHEMA studio FROM `+probe); err != nil {
+			t.Logf("cleanup: revoke schema CREATE: %v", err)
+		}
+		if _, err := env.owner.Exec(ctx, `DROP OWNED BY `+probe); err != nil {
+			t.Logf("cleanup: second DROP OWNED: %v", err)
+		}
 		if _, err := env.owner.Exec(ctx, `DROP ROLE IF EXISTS `+probe); err != nil {
-			t.Errorf("cleanup probe role: %v", err)
+			t.Errorf("cleanup probe role: %v\nprobe dependencies:\n%s",
+				err, dumpRoleDeps(ctx, env.owner, probe))
 		}
 	}
 	t.Cleanup(cleanup)

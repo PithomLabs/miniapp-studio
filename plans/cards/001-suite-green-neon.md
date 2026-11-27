@@ -70,3 +70,45 @@ time task dev:test -- -- -run 'TestRoleAttributes|TestPrivilegeParity|TestStudio
 then reply "done". The double `--` is load-bearing (task separator + dev-test passthrough terminator);
 `-count=1` defeats result caching. Agent will verify from the log, triage every red item at root cause, and
 either close the card green or file named defect cards. No commits, pushes, or Card 002 work in this card.
+
+**Focused gate result: RED (2026-11-27, ~22:55 +08:00, store package 297.7s).** Three confirmed failures
+(owner-terminal output pasted; the tee log was clobbered by a follow-up split-paste shell error, so only
+pasted fragments survive — the re-run must preserve one intact log):
+- `TestRoleAttributes` (43.1s): `no PUBLIC execute = false`; `app cannot execute operator_upsert = false`;
+  `test cannot execute operator_upsert = false`.
+- `TestPrivilegeParity` (89.3s): `function studio.operator_upsert(text,text,boolean) EXECUTE: live=true
+  test=true, want false`. (The `live CONNECT` line is informational, not a failure.)
+- `TestStudioLookupSetRepair` (23.1s): cleanup `DROP ROLE` → `role "studio_probe_..." cannot be dropped
+  because some objects depend on it (SQLSTATE 2BP01)`.
+- `TestMigrationDownUpBounded`, `TestPoolResetsTenantSetting`, `TestPoolDiscardsUnresettable`,
+  `TestTenantResetHookTimesOut`: UNADJUDICATED this run (no surviving output either way). The re-run
+  settles all seven.
+These are the same three signatures as the pre-000026 full-suite run: the 000026 forward REVOKE and the
+DROP OWNED cleanup fix did not hold live — both prior fixes were made without observing the live
+mechanism, and this card will not repeat that.
+
+**Triage (static analysis exhausted, recorded honestly).** Audited every writer of `operator_upsert`'s ACL:
+000002 creates it (revokes PUBLIC, grants migrating user); 000026 revokes `studio_app`; no other migration
+touches it; `GrantTestPrivileges` grants only the three `session_*` functions to the test role; the cycle
+test runs on a separate scratch DB; `CreateRunDB` is a plain `CREATE DATABASE` (no template); no
+`ALTER DEFAULT PRIVILEGES` or `GRANT ALL` anywhere; roles are not superuser (all TRUNCATE negatives held).
+On a fresh v26 DB the observed ACL (EXECUTE for app + test, EXECUTE for PUBLIC somewhere in `studio`) has
+no producing code path — the mechanism lives in the live catalog, not the repo. Leading theories, both
+UNPROVEN: (a) the SetRepair probe function survives cleanup with default PUBLIC EXECUTE (cleanup's
+DROP OWNED error was swallowed by `_, _`, and the canonical repair's ADMIN FALSE may have removed the
+cleanup's own permission — the test's step 4 breaking its own step 9); (b) a single PUBLIC grant on
+`operator_upsert` explains all three privilege symptoms at once, which 000026 (revoking only `studio_app`)
+would not remove. Neither is asserted as fact.
+
+**Instrumentation slice (this commit).** `store/acl_dump_test.go` (new): `dumpFunctionACLs` renders every
+studio/app function with owner + grantee=privilege/grantor triples, all default ACLs, and role superuser
+flags — hooked into both privilege tests via `if t.Failed()`; `dumpRoleDeps` lists a scratch role's owned
+objects, shared dependencies, memberships with admin/set/inherit options, and held grants. `set_repair_test.go`
+cleanup rewritten: DROP OWNED errors now surface, object drops run AS the probe via SET ROLE on a dedicated
+connection (SET TRUE survives the canonical repair; RESET guaranteed before release), schema grant revoked
+explicitly, and any DROP ROLE failure carries the full dependency dump. Genuinely fixes the cleanup under
+every realistic theory; worst case it fails with the mechanism attached. Repo-local gates green
+(gofmt/vet/unit 426/306/0).
+**Next:** owner pushes, reviews, and on GO re-runs the identical seven-test command with one intact log.
+Expected: SetRepair green; privilege checks red-WITH-mechanism (ACL dump names the grantor) — then one final
+targeted fix and one final green run. Two live runs to gate-green, each decisive; no full suite.
