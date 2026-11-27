@@ -1,7 +1,6 @@
 # Card 001: focused Neon regression gate (seven tests)
 
-- Status: `in-progress` (owner GO granted for focused run pending this amendment's review; no live execution
-  until owner confirms)
+- Status: `done` (seven-test focused gate GREEN live on Neon, 2026-11-28 ~00:01 +08:00)
 - Roadmap: A (quality gate for all B-series work)
 - Owner decision required: GO to execute one focused live run + fix any defects at root cause (repo-local
   fixes only; no infra changes; no commits without separate authorization). Full-suite-green is explicitly
@@ -167,3 +166,12 @@ exception to history-immutability: downs re-run and never applied live; 000026-u
 safe-or-better on fresh-UP (absent target warns either way) and required on replay-UP; the runner verifies no
 checksums, dirty-flag only). Out of scope, recorded: 000002-down/000009-down share the latent shape but no
 suite leg crosses below v15. **Prediction for attempt 2: all seven PASS.**
+
+**Green-run attempt 2 (2026-11-28 ~00:01 +08:00): ALL SEVEN PASS.** Verified from intact `test-run-card001.log`
+(43,550 bytes): TestMigrationDownUpBounded 198.42s (v27→v15→v27 incl. amended 000026 round-trip),
+TestPoolResetsTenantSetting 94.45s, TestTenantResetHookTimesOut 0.20s, TestPoolDiscardsUnresettable 20.77s,
+TestPrivilegeParity 84.35s, TestStudioLookupSetRepair 26.15s, TestRoleAttributes 44.17s; `ok store 468.524s`,
+all other packages ok/no-tests; zero `--- FAIL`, zero ACL/dependency dumps emitted, v27 reached (30 phase
+mentions). **Card 001 CLOSED.** Carried forward (not blocking): full-suite-green to the pre-demo gate;
+transient unit FAIL attribution; per-file adapter atomicity card; 000002-down/000009-down latent shape below
+v15 (no suite leg crosses there).
