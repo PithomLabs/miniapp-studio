@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PithomLabs/miniapp-studio/secrets"
 	"github.com/PithomLabs/miniapp-studio/store"
 )
 
@@ -127,9 +128,10 @@ func provision(ctx context.Context, f provisionFlags) error {
 	return nil
 }
 
-// readSecretFile reads one credential file and trims surrounding whitespace.
+// readSecretFile reads one credential file through the secure opener
+// (symlink-safe, owner-only, bounded) and trims surrounding whitespace.
 func readSecretFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
 		return "", err
 	}

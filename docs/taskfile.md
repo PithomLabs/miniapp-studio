@@ -191,6 +191,11 @@ to `TOKEN_FILE` for the same binding.
 Lists invitation metadata with live/consumed/revoked state. See
 [invitations](invitations.md).
 
+### `task dev:operator-offboard`
+Deactivates `BINDING` in `TENANT` and revokes its outstanding
+invitations atomically (owner ceremony). Reactivation never
+revives pre-offboard invitations (trigger safeguard).
+
 ## Capability tasks
 
 ### `task dev:capability-refresh`

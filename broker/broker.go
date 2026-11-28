@@ -21,4 +21,13 @@ var (
 	ErrLeaseConsumed      = errors.New("broker: single-use lease already consumed")
 	ErrLeaseMismatch      = errors.New("broker: lease capability/intent mismatch")
 	ErrInvalidGrant       = errors.New("broker: provider rejected the refresh token")
+	// ErrCredentialSuperseded reports a Mint finalized against a
+	// credential generation that revocation or re-enrollment
+	// replaced mid-exchange. Retryable: a fresh Mint binds the
+	// current generation.
+	ErrCredentialSuperseded = errors.New("broker: credential superseded during exchange")
+	// ErrLeaseSuperseded reports a Consume for a lease whose
+	// credential generation is revoked or retired. The caller
+	// needs a fresh Mint, not a retry of this lease.
+	ErrLeaseSuperseded = errors.New("broker: lease credential superseded")
 )

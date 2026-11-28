@@ -13,15 +13,22 @@ import (
 // acceptance, or session issuance. Production files in this package
 // must not reference those surfaces; the needles assemble from parts
 // so this scanner never matches its own source.
+//
+// Residual (F35-17): aliased-import-only references (e.g. dot-imports
+// or renamed packages calling bare identifiers) evade substring
+// needles; the reverse direction (zero execution-path snapshot
+// readers) was verified separately by search during review.
 func TestRefreshGrantsNothing(t *testing.T) {
 	needles := []string{
 		"bro" + "ker.",
 		"invi" + "te.",
 		"sess" + "ion_create",
+		"sess" + "ion_revoke",
 		"invita" + "tion_accept",
 		"Mint" + "(",
 		"Cons" + "ume(",
 		"Enr" + "oll(",
+		"Revo" + "ke(",
 		"Appr" + "ove(",
 	}
 	entries, err := os.ReadDir(".")

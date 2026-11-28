@@ -19,7 +19,6 @@ can't slip in later.
 | `STUDIO_DATABASE_URL` | secret | static | App-role DSN |
 | `STUDIO_OWNER_DATABASE_URL` | secret | static | Migration-role DSN |
 | `STUDIO_GATEWAY_ORG_SECRET` | secret | rotating | Per-build HMAC root |
-| `STUDIO_BROKER_KEK_FILE` | config | rotating | Path; KEK file is audited |
 | `STUDIO_OPERATORS_FILE` | config | static | Path; file is audited |
 | `MINIAPP_KEYS_FILE` | config | static | Path; file is audited |
 | `MINIAPP_GRANTS_FILE` | config | static | Path; file is audited |
@@ -57,13 +56,18 @@ keys, grants, Sprites token). All Studio tooling already writes
 0600; a legacy looser file now fails boot loudly instead of
 leaking silently. Message names the path and mode — never content.
 
-## Redaction
+## Redaction (F35-09 disposition)
 
-`Registry.Redact` replaces registered-secret assignment values
-(per line, so spaced values can't partially leak) and
-`postgres[ql]://…` shapes with placeholders. Identities and config
-values pass through. Callers must still never print values;
-`--show`-shaped output is structurally absent from every verb.
+The former `Registry.Redact` helper was removed: it had zero
+callers and demonstrably narrow coverage (JSON, bare values,
+`export` lines, lowercase names, continuations all bypassed it),
+so wiring it would have granted false confidence. The actual
+controls are structural prevention (0600 file handoff,
+identities-only output, no `--show` paths anywhere) plus the two
+scoped redactors that remain: `redactDSN` (DSN credential spans in
+CLI errors) and `RedactSpans` (credential-shaped spans in
+tool/sandbox output). Each documents its own scope; neither claims
+general secret detection.
 
 ## Verbs
 
@@ -80,10 +84,15 @@ tenant credentials. Rotation procedures live with their owners
 (`docs/dev-serve.md` for the app role); this registry only declares
 which keys rotate.
 
-## Extension: tenant broker (open decision)
+## Tenant broker (decided: option A, server-side mint)
 
 Tenant variables (provider OAuth/API keys) will register with
 `ScopeTenant` and resolve exclusively through the broker — never
-env, never dotenv. The broker's shape (server-side mint vs
-DB-held retrieval) is the one open F0 decision; see the
-increment report.
+env, never dotenv. No tenant-scoped entries exist yet; the scope
+exists so ambient tenant values can't slip in later. The broker
+shape decision closed in increment 2 (owner decision A):
+refresh tokens sealed in Neon under a deployment KEK, short-lived
+execution leases minted server-side; see `docs/broker.md`. The
+KEK path travels as an explicit `--kek-file` verb flag (never
+ambient, never a registry read); no `*_KEK_FILE` registry entry
+exists (F35-10: the unused entry was removed).

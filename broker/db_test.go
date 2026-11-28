@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 // hands it the decrypted refresh token and returns canned access
 // material. It never mirrors broker internals.
 type fakeExchanger struct {
+	mu          sync.Mutex
 	wantRefresh string
 	access      string
 	ttl         time.Duration
@@ -28,11 +31,34 @@ type fakeExchanger struct {
 }
 
 func (f *fakeExchanger) Exchange(_ context.Context, _ string, refresh string) (string, time.Duration, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if refresh != f.wantRefresh {
 		return "", 0, errors.New("fake: unexpected refresh token handed to provider")
 	}
 	return f.access, f.ttl, f.err
+}
+
+// gateExchanger blocks inside Exchange until released, so tests can
+// interleave revocation/re-enrollment deterministically between
+// Mint's credential read and its finalization.
+type gateExchanger struct {
+	entered chan struct{}
+	release chan struct{}
+	access  string
+	ttl     time.Duration
+	err     error
+}
+
+func (g *gateExchanger) Exchange(ctx context.Context, _ string, _ string) (string, time.Duration, error) {
+	close(g.entered)
+	select {
+	case <-g.release:
+		return g.access, g.ttl, g.err
+	case <-ctx.Done():
+		return "", 0, ctx.Err()
+	}
 }
 
 func testBroker(t *testing.T, ex Exchanger) (*Broker, *pgxpool.Pool) {
@@ -255,6 +281,167 @@ func TestBrokerRowsHoldNoSecrets(t *testing.T) {
 	for _, leak := range []string{refreshCanary, accessCanary} {
 		if strings.Contains(dump.String(), leak) {
 			t.Fatalf("broker rows leaked %q", leak)
+		}
+	}
+}
+
+// TestBrokerRevokeDuringExchangeFailsMint is the deterministic
+// F35-05 interleaving: revocation commits while Mint is inside the
+// provider exchange, so finalization must refuse and persist no
+// lease — even though the exchange itself succeeded.
+func TestBrokerRevokeDuringExchangeFailsMint(t *testing.T) {
+	gate := &gateExchanger{entered: make(chan struct{}), release: make(chan struct{}), access: "a", ttl: time.Hour}
+	b, owner := testBroker(t, gate)
+	ctx := context.Background()
+	if err := b.Enroll(ctx, "tenant-rv-1", "prov", []byte("r")); err != nil {
+		t.Fatal(err)
+	}
+	mintErr := make(chan error, 1)
+	go func() {
+		_, _, _, err := b.Mint(ctx, "tenant-rv-1", "prov", "cap", intentFor("x"), time.Minute, true)
+		mintErr <- err
+	}()
+	<-gate.entered
+	if err := b.Revoke(ctx, "tenant-rv-1", "prov"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	close(gate.release)
+	if err := <-mintErr; !errors.Is(err, ErrCredentialSuperseded) {
+		t.Fatalf("mint err = %v, want ErrCredentialSuperseded", err)
+	}
+	var leases int
+	if err := owner.QueryRow(ctx, `SELECT COUNT(*) FROM studio.broker_leases WHERE tenant_id = 'tenant-rv-1'`).Scan(&leases); err != nil || leases != 0 {
+		t.Fatalf("superseded mint persisted %d leases (err=%v)", leases, err)
+	}
+}
+
+// TestBrokerRevokeBeforeConsumeRetiresLease: outstanding leases stop
+// working the moment revocation commits.
+func TestBrokerRevokeBeforeConsumeRetiresLease(t *testing.T) {
+	ex := &fakeExchanger{wantRefresh: "r", access: "a", ttl: time.Hour}
+	b, _ := testBroker(t, ex)
+	ctx := context.Background()
+	if err := b.Enroll(ctx, "tenant-rv-2", "prov", []byte("r")); err != nil {
+		t.Fatal(err)
+	}
+	intent := intentFor("x")
+	leaseID, _, _, err := b.Mint(ctx, "tenant-rv-2", "prov", "cap", intent, 10*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Revoke(ctx, "tenant-rv-2", "prov"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Consume(ctx, "tenant-rv-2", leaseID, "cap", intent); !errors.Is(err, ErrLeaseSuperseded) {
+		t.Fatalf("consume after revoke err = %v, want ErrLeaseSuperseded", err)
+	}
+}
+
+// TestBrokerReenrollRetiresOldLease: revoke → re-enroll clears the
+// credential for NEW mints, but the old lease stays dead (version
+// binding, not just revocation).
+func TestBrokerReenrollRetiresOldLease(t *testing.T) {
+	ex := &fakeExchanger{wantRefresh: "r1", access: "a", ttl: time.Hour}
+	b, _ := testBroker(t, ex)
+	ctx := context.Background()
+	if err := b.Enroll(ctx, "tenant-rv-3", "prov", []byte("r1")); err != nil {
+		t.Fatal(err)
+	}
+	intent := intentFor("x")
+	leaseID, _, _, err := b.Mint(ctx, "tenant-rv-3", "prov", "cap", intent, 10*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Revoke(ctx, "tenant-rv-3", "prov"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Enroll(ctx, "tenant-rv-3", "prov", []byte("r2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Consume(ctx, "tenant-rv-3", leaseID, "cap", intent); !errors.Is(err, ErrLeaseSuperseded) {
+		t.Fatalf("consume of old lease err = %v, want ErrLeaseSuperseded", err)
+	}
+	ex.wantRefresh = "r2"
+	if _, _, _, err := b.Mint(ctx, "tenant-rv-3", "prov", "cap", intentFor("y"), time.Minute, true); err != nil {
+		t.Fatalf("mint on new generation: %v", err)
+	}
+}
+
+// TestBrokerStaleInvalidGrantKeepsReenrollment (F35-07): a re-enroll
+// landing between the credential read and a stale invalid_grant
+// must survive — auto-revoke binds to the exchanged generation.
+func TestBrokerStaleInvalidGrantKeepsReenrollment(t *testing.T) {
+	gate := &gateExchanger{entered: make(chan struct{}), release: make(chan struct{}), err: ErrInvalidGrant}
+	b, _ := testBroker(t, gate)
+	ctx := context.Background()
+	if err := b.Enroll(ctx, "tenant-rv-4", "prov", []byte("r1")); err != nil {
+		t.Fatal(err)
+	}
+	mintErr := make(chan error, 1)
+	go func() {
+		_, _, _, err := b.Mint(ctx, "tenant-rv-4", "prov", "cap", intentFor("x"), time.Minute, true)
+		mintErr <- err
+	}()
+	<-gate.entered
+	if err := b.Enroll(ctx, "tenant-rv-4", "prov", []byte("r2")); err != nil {
+		t.Fatalf("re-enroll: %v", err)
+	}
+	close(gate.release)
+	if err := <-mintErr; !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("mint err = %v, want ErrInvalidGrant", err)
+	}
+	// The new generation stands: minting with r2 works.
+	ex2 := &fakeExchanger{wantRefresh: "r2", access: "a", ttl: time.Hour}
+	b2, err := New(b.kek, b.db, ex2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := b2.Mint(ctx, "tenant-rv-4", "prov", "cap", intentFor("y"), time.Minute, true); err != nil {
+		t.Fatalf("mint after stale invalid_grant: %v (re-enrollment was killed)", err)
+	}
+}
+
+// TestBrokerConcurrentMintRevokeStaysTyped: racing mints against
+// revokes yields only typed outcomes and a consistent end state.
+func TestBrokerConcurrentMintRevokeStaysTyped(t *testing.T) {
+	ex := &fakeExchanger{wantRefresh: "r", access: "a", ttl: time.Hour}
+	b, _ := testBroker(t, ex)
+	ctx := context.Background()
+	if err := b.Enroll(ctx, "tenant-rv-5", "prov", []byte("r")); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			_, _, _, err := b.Mint(ctx, "tenant-rv-5", "prov", "cap", intentFor(fmt.Sprintf("m-%d", i)), time.Minute, true)
+			errs <- err
+		}(i)
+		go func() {
+			defer wg.Done()
+			errs <- b.Revoke(ctx, "tenant-rv-5", "prov")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrCredentialSuperseded) && !errors.Is(err, ErrCredentialRevoked) && !errors.Is(err, ErrCredentialNotFound) {
+			t.Fatalf("untyped race outcome: %v", err)
+		}
+	}
+	// End state: credential revoked, so every persisted lease refuses.
+	stored, err := b.Leases(ctx, "tenant-rv-5", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range stored {
+		if err := b.Consume(ctx, "tenant-rv-5", l.ID, l.Capability, l.IntentHash); !errors.Is(err, ErrLeaseSuperseded) {
+			t.Fatalf("lease %s consumable after revoke race: %v", l.ID, err)
 		}
 	}
 }

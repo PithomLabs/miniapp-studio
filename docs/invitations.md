@@ -34,6 +34,17 @@ grants only its predetermined binding within its designated tenant.
   input; RLS confines all member operations.
 - Expiry enforced in the function guard (default 7d, max 30d).
 
+## Offboarding (F35-01)
+
+Acceptance refuses bindings that exist inactive and never
+flips inactive to active. Offboard through `task
+dev:operator-offboard` (or `store.OffboardOperator`): it revokes
+the binding's outstanding invitations and deactivates the row
+atomically. A reactivation trigger revokes outstanding invites
+on every false→true transition, function or raw SQL, so no
+pre-offboard invitation can revive after reactivation on any
+path. Only a fresh post-reactivation invitation works.
+
 ## Residual
 
 HTTP accept + session-bound invite endpoints are a later

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/PithomLabs/miniapp-studio/dbenv"
+	"github.com/PithomLabs/miniapp-studio/secrets"
 )
 
 func runDevBind(args []string) error {
@@ -291,7 +292,7 @@ func findNamed(data []byte, want, kind string) (string, error) {
 // returns the endpoint hostname — the ONLY value retained from the
 // file. Callers must never log or return anything else from it.
 func normalizeDSNFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
 		return "", fmt.Errorf("read back DSN file: %v", err)
 	}

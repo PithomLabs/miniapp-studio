@@ -9,7 +9,7 @@ import (
 
 // TestPrivilegeParity pins U5.12 invariant 5: the test role carries
 // EXACTLY the live role's privilege set on run databases — derived
-// from the migration grant audit (000002/3/5/6/9/10/11/12/13/14/28/29/30), and
+// from the migration grant audit (000002/3/5/6/9/10/11/12/13/14/28/29/30/31/32), and
 // enforced here against the live catalog so any future migration that
 // widens studio_app without widening the mirror fails loudly.
 //
@@ -55,9 +55,19 @@ func TestPrivilegeParity(t *testing.T) {
 		"checkpoints", "sprite_lifecycle_receipts",
 		"broker_credentials", "broker_leases",
 		"invitations", "capability_snapshots"}
+	// F35-14: DELETE revoked on the F0 tables (000031/000032); the
+	// mirror grants the remainder without it.
+	noDelete := map[string]bool{
+		"broker_credentials": true, "broker_leases": true,
+		"invitations": true, "capability_snapshots": true,
+	}
 	for _, table := range studioTables {
 		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
-			check("table", "studio."+table, priv, true)
+			want := true
+			if priv == "DELETE" && noDelete[table] {
+				want = false
+			}
+			check("table", "studio."+table, priv, want)
 		}
 		// TRUNCATE is the one DML-adjacent privilege migrations never
 		// grant; parity pins the negative too.

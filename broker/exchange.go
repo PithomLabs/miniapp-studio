@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,16 +32,41 @@ type HTTPExchanger struct {
 	Client       *http.Client
 }
 
+// errNoRedirect refuses every redirect: refresh tokens and client
+// secrets go to the configured endpoint only (F35-04). Go's default
+// client would forward the credential-bearing body on 307/308.
+var errNoRedirect = errors.New("broker: token endpoint redirected (refused)")
+
 func (h *HTTPExchanger) client() *http.Client {
-	if h.Client != nil {
-		return h.Client
+	base := h.Client
+	if base == nil {
+		base = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	// Clone before arming: the caller's client must not be mutated,
+	// and a caller-supplied CheckRedirect must not re-enable
+	// following (the refusal is this type's invariant).
+	c := *base
+	c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errNoRedirect
+	}
+	return &c
+}
+
+// oauthErrorCodes are the RFC 6749 §5.2 error codes plus the
+// registered refresh-flow extensions the broker repeats verbatim.
+// Anything else is provider-controlled text and stays out of
+// errors (F35-13).
+var oauthErrorCodes = map[string]bool{
+	"invalid_request": true, "invalid_client": true,
+	"invalid_grant": true, "unauthorized_client": true,
+	"unsupported_grant_type": true, "invalid_scope": true,
+	"temporarily_unavailable": true,
 }
 
 // Exchange posts the refresh grant and parses the token response.
 // invalid_grant maps to ErrInvalidGrant (the broker auto-revokes);
-// any other failure is returned verbatim without secret bytes.
+// redirects fail closed without forwarding credentials; unknown
+// provider error codes are bucketed, never echoed.
 func (h *HTTPExchanger) Exchange(ctx context.Context, provider, refresh string) (string, time.Duration, error) {
 	if h.Endpoint == "" {
 		return "", 0, fmt.Errorf("broker: no token endpoint for provider %q", provider)
@@ -58,6 +84,11 @@ func (h *HTTPExchanger) Exchange(ctx context.Context, provider, refresh string) 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := h.client().Do(req)
 	if err != nil {
+		// errors.Is unwraps the *url.Error the client wraps
+		// CheckRedirect failures in.
+		if errors.Is(err, errNoRedirect) {
+			return "", 0, fmt.Errorf("broker: token endpoint redirected (refused, credentials not forwarded)")
+		}
 		return "", 0, fmt.Errorf("broker: token endpoint unreachable: %w", err)
 	}
 	defer resp.Body.Close()
@@ -77,6 +108,9 @@ func (h *HTTPExchanger) Exchange(ctx context.Context, provider, refresh string) 
 		return "", 0, ErrInvalidGrant
 	}
 	if doc.ErrCode != "" {
+		if !oauthErrorCodes[doc.ErrCode] {
+			return "", 0, fmt.Errorf("broker: token endpoint error (unrecognized code, http %d)", resp.StatusCode)
+		}
 		return "", 0, fmt.Errorf("broker: token endpoint error %q (http %d)", doc.ErrCode, resp.StatusCode)
 	}
 	if resp.StatusCode/100 != 2 || doc.Access == "" || doc.ExpiresIn <= 0 {

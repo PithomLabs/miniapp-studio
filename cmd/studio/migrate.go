@@ -5,11 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
 	"github.com/PithomLabs/miniapp-studio/dbenv"
+	"github.com/PithomLabs/miniapp-studio/secrets"
 	"github.com/PithomLabs/miniapp-studio/store"
 )
 
@@ -24,7 +24,7 @@ func runMigrate(args []string) error {
 	}
 	dsn := strings.TrimSpace(os.Getenv("STUDIO_OWNER_DATABASE_URL"))
 	if *dsnFile != "" {
-		raw, err := os.ReadFile(*dsnFile)
+		raw, _, err := secrets.ReadSecureFile(*dsnFile, secrets.MaxValueBytes)
 		if err != nil {
 			return fmt.Errorf("migrate: read dsn file: %w", err)
 		}
@@ -54,22 +54,16 @@ func runMigrate(args []string) error {
 	return nil
 }
 
-// redactDSN rewrites err so a wrapped library error can never echo the DSN
-// password back to the operator's terminal. F13 pins this. The error chain
-// is preserved untouched when nothing needed redacting; a redacted error is
-// necessarily flattened, because the wrapped text itself held the secret.
+// redactDSN rewrites err so a wrapped library error can never echo DSN
+// credential material back to the operator's terminal. F13 pins this.
+// The error chain is preserved untouched when nothing needed redacting;
+// a redacted error is necessarily flattened, because the wrapped text
+// itself held the secret. Span collection lives in secrets so dbenv
+// redacts at the source too.
 func redactDSN(err error, dsn string) error {
 	msg := err.Error()
-	redacted := msg
-	if u, perr := url.Parse(dsn); perr == nil {
-		if pw, ok := u.User.Password(); ok && pw != "" {
-			redacted = strings.ReplaceAll(redacted, pw, "<redacted-password>")
-		}
-	} else if strings.Contains(msg, dsn) {
-		redacted = strings.ReplaceAll(msg, dsn, "<redacted-dsn>")
+	if redacted := secrets.RedactDSNText(msg, dsn); redacted != msg {
+		return errors.New(redacted)
 	}
-	if redacted == msg {
-		return err
-	}
-	return errors.New(redacted)
+	return err
 }

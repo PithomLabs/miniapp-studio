@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,9 @@ func TestDevInviteVerbsValidateArgs(t *testing.T) {
 	if err := runDevInviteList(nil, &buf); err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Fatalf("list without tenant err = %v", err)
 	}
+	if err := runDevOperatorOffboard([]string{"--tenant", "t"}, &buf); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("offboard without binding err = %v", err)
+	}
 	// Accept audits the token file before touching the network.
 	var buf2 bytes.Buffer
 	loose := filepath.Join(t.TempDir(), "tok")
@@ -34,6 +38,22 @@ func TestDevInviteVerbsValidateArgs(t *testing.T) {
 	err := runDevInviteAccept([]string{"--token-file", loose, "--session-token-file", filepath.Join(t.TempDir(), "s")}, &buf2)
 	if err == nil || !strings.Contains(err.Error(), "token file") {
 		t.Fatalf("accept with 0644 token err = %v", err)
+	}
+}
+
+func TestCheckTTLHours(t *testing.T) {
+	for _, h := range []float64{0.5, 1, 168, 720} {
+		if err := checkTTLHours(h); err != nil {
+			t.Errorf("ttl %v rejected: %v", h, err)
+		}
+	}
+	for name, h := range map[string]float64{
+		"zero": 0, "negative": -1, "over-max": 721, "huge": 1e9,
+		"NaN": math.NaN(), "+Inf": math.Inf(1), "-Inf": math.Inf(-1),
+	} {
+		if err := checkTTLHours(h); err == nil {
+			t.Errorf("ttl %s (%v) accepted", name, h)
+		}
 	}
 }
 

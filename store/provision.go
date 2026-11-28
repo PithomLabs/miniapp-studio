@@ -169,3 +169,19 @@ func UpsertOperator(ctx context.Context, owner *pgxpool.Pool, tenantID, bindingI
 	}
 	return nil
 }
+
+// OffboardOperator deactivates one (tenant, binding) operator and revokes
+// its outstanding invitations atomically. Owner connection only; the
+// SECURITY DEFINER function owns the write set. This is the only
+// offboarding path that revokes invites — raw-SQL deactivation stops
+// issuance but leaves invite hygiene to the reactivation trigger.
+func OffboardOperator(ctx context.Context, owner *pgxpool.Pool, tenantID, bindingID string) error {
+	if tenantID == "" || bindingID == "" {
+		return fmt.Errorf("store: tenant and binding are required")
+	}
+	if _, err := owner.Exec(ctx, `SELECT studio.operator_offboard($1, $2)`,
+		tenantID, bindingID); err != nil {
+		return fmt.Errorf("store: offboard operator: %w", err)
+	}
+	return nil
+}

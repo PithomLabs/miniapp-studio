@@ -18,7 +18,9 @@ mem.out
 .env.*
 *.pem
 *.key
-secrets/
+# NOTE (R36-01): no `secrets/` directory rule — that path is the secrets
+# Go package and must stay tracked. Credential values stay out via the
+# patterns above; never store live values in untracked-dotfile form.
 !.github/workflows/
 
 # Editor and OS noise

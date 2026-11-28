@@ -216,21 +216,23 @@ func TestInviteConcurrentAccept(t *testing.T) {
 	}
 	const racers = 8
 	var wg sync.WaitGroup
-	wins := make(chan bool, racers)
+	results := make(chan error, racers)
 	for i := 0; i < racers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			_, _, err := svc.Accept(ctx, token, time.Now())
-			wins <- err == nil
+			results <- err
 		}()
 	}
 	wg.Wait()
-	close(wins)
+	close(results)
 	var succeeded int
-	for w := range wins {
-		if w {
+	for err := range results {
+		if err == nil {
 			succeeded++
+		} else if !errors.Is(err, ErrInviteInvalid) {
+			t.Fatalf("loser error quality: %v (want ErrInviteInvalid)", err)
 		}
 	}
 	if succeeded != 1 {

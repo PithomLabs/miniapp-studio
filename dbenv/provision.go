@@ -207,6 +207,14 @@ var studioTables = []string{
 	"invitations", "capability_snapshots",
 }
 
+// f0NoDeleteTables are F0 tables whose DELETE grant was revoked
+// (F35-14, migrations 000031/000032): no code path deletes from
+// them, so the mirror grants SELECT/INSERT/UPDATE only.
+var f0NoDeleteTables = []string{
+	"broker_credentials", "broker_leases",
+	"invitations", "capability_snapshots",
+}
+
 // frameworkTables mirrors the 000002 app.* DML grant set.
 var frameworkTables = []string{
 	"invocations", "approvals", "audit_events", "effect_records", "kill_switches",
@@ -230,7 +238,8 @@ func GrantTestPrivileges(ctx context.Context, pool *pgxpool.Pool) error {
 	stmts := []string{
 		`GRANT CONNECT ON DATABASE ` + quoteIdent(dbname) + ` TO ` + role,
 		`GRANT USAGE ON SCHEMA studio, app TO ` + role,
-		`GRANT SELECT, INSERT, UPDATE, DELETE ON ` + studioObjectList() + ` TO ` + role,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ` + studioDeletableList() + ` TO ` + role,
+		`GRANT SELECT, INSERT, UPDATE ON ` + f0NoDeleteList() + ` TO ` + role,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ` + frameworkObjectList() + ` TO ` + role,
 		// 000010 grants the version table unqualified; resolve identically.
 		`GRANT SELECT ON studio_schema_migrations TO ` + role,
@@ -281,9 +290,26 @@ func grantTestFunctionExec(ctx context.Context, pool *pgxpool.Pool, role string)
 	return nil
 }
 
-func studioObjectList() string {
-	qualified := make([]string, len(studioTables))
-	for i, t := range studioTables {
+// studioDeletableList qualifies the studio tables that keep the
+// DELETE grant; f0NoDeleteList qualifies the F0 remainder whose
+// DELETE grant was revoked (F35-14).
+func studioDeletableList() string {
+	noDelete := map[string]bool{}
+	for _, t := range f0NoDeleteTables {
+		noDelete[t] = true
+	}
+	var qualified []string
+	for _, t := range studioTables {
+		if !noDelete[t] {
+			qualified = append(qualified, "studio."+t)
+		}
+	}
+	return strings.Join(qualified, ", ")
+}
+
+func f0NoDeleteList() string {
+	qualified := make([]string, len(f0NoDeleteTables))
+	for i, t := range f0NoDeleteTables {
 		qualified[i] = "studio." + t
 	}
 	return strings.Join(qualified, ", ")

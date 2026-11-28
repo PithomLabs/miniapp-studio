@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/PithomLabs/miniapp-studio/broker"
@@ -73,11 +74,17 @@ func brokerFlagSet(name string, f *brokerFlags, needProvider bool) *flag.FlagSet
 
 // brokerPool resolves policy, production guard, and a dev-database
 // DSN. Errors after the DSN exists must pass through redactDSN.
+// The cancel func lives in a separate variable from the named
+// returns: error paths return nil cancel to the caller while the
+// deferred cleanup still runs (F35-02: calling the nil-valued
+// named return panicked on every guard/policy/DSN failure).
 func brokerPool(fs *flag.FlagSet, f *brokerFlags) (ctx context.Context, cancel context.CancelFunc, dsn string, pol dbenv.EndpointPolicy, err error) {
-	ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+	var live context.Context
+	var stop context.CancelFunc
+	live, stop = context.WithTimeout(context.Background(), 60*time.Second)
 	defer func() {
 		if err != nil {
-			cancel()
+			stop()
 		}
 	}()
 	pol, err = devPolicy(f.metadataFile)
@@ -93,10 +100,13 @@ func brokerPool(fs *flag.FlagSet, f *brokerFlags) (ctx context.Context, cancel c
 	}
 	parsed, err := url.Parse(base)
 	if err != nil {
-		return nil, nil, "", dbenv.EndpointPolicy{}, fmt.Errorf("%s: parse DSN: %w", fs.Name(), err)
+		// F35-03: the parser error embeds the raw DSN — redact the
+		// credential spans structurally instead of echoing it.
+		redacted := redactDSN(fmt.Errorf("parse DSN: %w", err), base)
+		return nil, nil, "", dbenv.EndpointPolicy{}, fmt.Errorf("%s: %w", fs.Name(), redacted)
 	}
 	parsed.Path = "/" + devDatabaseName
-	return ctx, cancel, parsed.String(), pol, nil
+	return live, stop, parsed.String(), pol, nil
 }
 
 func runDevBrokerEnroll(args []string, stdout io.Writer) error {
@@ -115,12 +125,16 @@ func runDevBrokerEnroll(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := secrets.CheckFileMode(refreshFile); err != nil {
+	refreshRaw, _, err := secrets.ReadSecureFile(refreshFile, secrets.MaxValueBytes)
+	if err != nil {
 		return fmt.Errorf("broker-enroll: refresh file: %w", err)
 	}
-	refresh, err := os.ReadFile(refreshFile)
-	if err != nil {
-		return fmt.Errorf("broker-enroll: read refresh file: %w", err)
+	// F35-12: trim editor whitespace (a trailing newline would seal
+	// a wrong token and self-destruct the enrollment at first
+	// Mint); refuse empties explicitly.
+	refresh := []byte(strings.TrimSpace(string(refreshRaw)))
+	if len(refresh) == 0 {
+		return fmt.Errorf("broker-enroll: refresh file %q is empty", refreshFile)
 	}
 	ctx, cancel, dsn, pol, err := brokerPool(fs, &f)
 	if err != nil {

@@ -85,6 +85,48 @@ func TestDbTestPackagesExist(t *testing.T) {
 			t.Errorf("package %s has no tests", dir)
 		}
 	}
+	// Completeness: every package whose tests import testdb must be
+	// listed (except the e2e harness, excluded by design), or its
+	// live gate silently matches zero tests.
+	listed := map[string]bool{}
+	for _, p := range dbTestPackages {
+		listed[strings.TrimSuffix(strings.TrimPrefix(p, "./"), "/...")] = true
+	}
+	covered := func(rel string) bool {
+		for prefix := range listed {
+			if rel == prefix || strings.HasPrefix(rel, prefix+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	err := filepath.WalkDir(repo, func(path string, e os.DirEntry, err error) error {
+		if err != nil || !e.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(repo, path)
+		if rel == "." {
+			return nil
+		}
+		if rel == "e2e" || strings.HasPrefix(rel, ".") {
+			return filepath.SkipDir
+		}
+		tests, _ := filepath.Glob(filepath.Join(path, "*_test.go"))
+		for _, tf := range tests {
+			raw, err := os.ReadFile(tf)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(raw), "miniapp-studio/testdb") && !covered(rel) {
+				t.Errorf("package ./%s imports testdb but is missing from dbTestPackages", rel)
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDevResetRequiresConfirm(t *testing.T) {

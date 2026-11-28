@@ -231,3 +231,22 @@ func TestPoolConfigRejectsUnbound(t *testing.T) {
 		t.Errorf("error %q lacks the refusal marker", err.Error())
 	}
 }
+
+// TestCheckEndpointRedactsParseErrors (F35-03): malformed DSNs fail
+// closed at the source without echoing credential material.
+func TestCheckEndpointRedactsParseErrors(t *testing.T) {
+	pol := testPolicy()
+	canary := "canary-pw-f35-03"
+	for _, raw := range []string{
+		"://u:" + canary + "@h/db",
+		"postgres://u:p%40" + canary + "@h/db\x7f",
+	} {
+		_, err := CheckEndpoint(raw, pol)
+		if err == nil {
+			t.Fatalf("malformed DSN accepted: %q", raw)
+		}
+		if strings.Contains(err.Error(), canary) {
+			t.Errorf("parse error leaked DSN: %q", err.Error())
+		}
+	}
+}

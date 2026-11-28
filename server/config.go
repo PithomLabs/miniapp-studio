@@ -50,6 +50,11 @@ type Config struct {
 
 var rxHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// maxOperatorsFileBytes bounds the operators document: large enough
+// for any realistic tenant roster, small enough to fail closed on
+// runaway input.
+const maxOperatorsFileBytes = 1 << 20
+
 // Load reads and validates configuration through the secrets registry,
 // collecting every problem before failing so operators fix configuration
 // in one pass. Required: STUDIO_OPERATORS_FILE, MINIAPP_KEYS_FILE,
@@ -190,10 +195,7 @@ func mustSecret(value string, err error, name string, fail func(string, ...any))
 }
 
 func loadOperators(path string) ([]Operator, error) {
-	if err := secrets.CheckFileMode(path); err != nil {
-		return nil, err
-	}
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, maxOperatorsFileBytes)
 	if err != nil {
 		return nil, err
 	}

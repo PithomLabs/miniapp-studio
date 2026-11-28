@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/PithomLabs/miniapp-studio/dbenv"
+	"github.com/PithomLabs/miniapp-studio/secrets"
 	"github.com/PithomLabs/miniapp-studio/store"
 )
 
@@ -74,9 +76,10 @@ func (p *servePaths) check() error {
 	return nil
 }
 
-// readSecret loads one credential file. Errors name the file, never content.
+// readSecret loads one credential file through the secure opener.
+// Errors name the file, never content.
 func readSecret(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
 		return "", err
 	}
@@ -354,9 +357,9 @@ func ensureKeysFile(path, credential, tenant string) error {
 	want := map[string]any{
 		credential: map[string]any{"agent": "svc-agent", "kind": "service", "id": "svc", "tenant": tenant},
 	}
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("dev serve-init: keys file: %w", err)
 		}
 		out, _ := json.MarshalIndent(want, "", "  ")
@@ -380,9 +383,9 @@ func ensureGrantsFile(path, tenant string) error {
 	want := map[string]any{
 		tenant: map[string]any{"studio-runner": "autonomous", "studio": "autonomous"},
 	}
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("dev serve-init: grants file: %w", err)
 		}
 		out, _ := json.MarshalIndent(want, "", "  ")

@@ -37,15 +37,21 @@ grants mirrored to the test role.
 
 1. **Mint** validates scope (non-empty tenant/provider/
    capability, 64-hex intent, TTL within (0, 1h]), decrypts the
-   refresh, trades it at the provider, stores the lease row, and
-   returns `(leaseID, access, expires)` in memory. The lease TTL
-   never exceeds the provider's `expires_in`. A provider
-   `invalid_grant` auto-revokes the dead credential.
+   refresh, trades it at the provider, then finalizes under a
+   credential row lock: a revoke or re-enrollment that landed
+   mid-exchange fails the mint (`ErrCredentialSuperseded`)
+   instead of issuing a lease for a dead generation. Each lease
+   binds its issuing credential version. The lease TTL never
+   exceeds the provider's `expires_in`. A provider
+   `invalid_grant` auto-revokes the dead credential — but only
+   when that exact generation is still current, so a concurrent
+   re-enrollment is never killed by a stale grant failure.
 2. **Consume** validates one use atomically: tenant, capability,
-   and intent must match the grant; expiry and single-use are
-   enforced in the gating UPDATE. Failures are typed
-   (`ErrLeaseExpired`, `ErrLeaseConsumed`, `ErrLeaseMismatch`,
-   `ErrLeaseNotFound`) so adapters react without string parsing.
+   and intent must match the grant; expiry, single-use, and
+   credential generation are enforced in the gating UPDATE, so
+   revoked or re-enrolled generations refuse with
+   `ErrLeaseSuperseded`. Failures are typed so adapters react
+   without string parsing.
 3. **Revoke** marks the credential dead; mints fail thereafter.
    Revoking a missing credential is a typed NotFound (a typo'd
    provider must not silently "succeed").

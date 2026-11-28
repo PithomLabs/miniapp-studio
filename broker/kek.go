@@ -3,7 +3,6 @@ package broker
 import (
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/PithomLabs/miniapp-studio/secrets"
@@ -13,12 +12,9 @@ import (
 // owner-only and hold exactly 64 hex chars (32 bytes). Failures name
 // the path problem, never key material.
 func LoadKEK(path string) (kek []byte, kekID string, err error) {
-	if err := secrets.CheckFileMode(path); err != nil {
-		return nil, "", fmt.Errorf("broker: KEK file: %w", err)
-	}
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
-		return nil, "", fmt.Errorf("broker: read KEK file: %w", err)
+		return nil, "", fmt.Errorf("broker: KEK file: %w", err)
 	}
 	text := strings.TrimSpace(string(raw))
 	kek, err = hex.DecodeString(text)

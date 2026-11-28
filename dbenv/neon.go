@@ -24,6 +24,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/PithomLabs/miniapp-studio/secrets"
 )
 
 // ErrNoPolicy reports missing Neon branch metadata. Callers map it to
@@ -118,7 +120,10 @@ const defaultPGPort = "5432"
 func CheckEndpoint(raw string, pol EndpointPolicy) (*Endpoint, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("dbenv: unapproved endpoint: parse: %w", err)
+		// The parser error embeds the raw DSN: redact at the
+		// source so no caller can echo credentials (F35-03).
+		clean := secrets.RedactDSNText(err.Error(), raw)
+		return nil, fmt.Errorf("dbenv: unapproved endpoint: parse: %s", clean)
 	}
 	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
 		return nil, fmt.Errorf("dbenv: unapproved endpoint: scheme must be postgres")
@@ -181,7 +186,10 @@ func PoolConfig(raw string, pol EndpointPolicy) (*pgxpool.Config, error) {
 	}
 	cfg, err := pgxpool.ParseConfig(raw)
 	if err != nil {
-		return nil, fmt.Errorf("dbenv: pool config: %w", err)
+		// pgx parse errors can carry the connection string:
+		// redact at the source (F35-03).
+		clean := secrets.RedactDSNText(err.Error(), raw)
+		return nil, fmt.Errorf("dbenv: pool config: %s", clean)
 	}
 	tlsCfg, err := TLSConfigFor(ep)
 	if err != nil {

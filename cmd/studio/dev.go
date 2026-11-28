@@ -34,12 +34,13 @@ import (
 	"time"
 
 	"github.com/PithomLabs/miniapp-studio/dbenv"
+	"github.com/PithomLabs/miniapp-studio/secrets"
 	"github.com/PithomLabs/miniapp-studio/store"
 )
 
 func runDev(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|capability-refresh> [flags]")
+		return fmt.Errorf("usage: studio dev <bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|operator-offboard|capability-refresh> [flags]")
 	}
 	switch args[0] {
 	case "bind":
@@ -84,10 +85,12 @@ func runDev(args []string) error {
 		return runDevInviteResend(args[1:], os.Stdout)
 	case "invite-list":
 		return runDevInviteList(args[1:], os.Stdout)
+	case "operator-offboard":
+		return runDevOperatorOffboard(args[1:], os.Stdout)
 	case "capability-refresh":
 		return runDevCapabilityRefresh(args[1:], os.Stdout)
 	default:
-		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|capability-refresh)", args[0])
+		return fmt.Errorf("unknown dev command %q (want bind|setup|doctor|init|reset|test|fingerprint|diag-roles|serve-init|serve|secrets-validate|secrets-plan|broker-init-kek|broker-enroll|broker-revoke|broker-leases|invite-create|invite-accept|invite-revoke|invite-resend|invite-list|operator-offboard|capability-refresh)", args[0])
 	}
 }
 
@@ -97,7 +100,7 @@ func runDev(args []string) error {
 func devDSN(dsnFile string) (string, error) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if dsnFile != "" {
-		raw, err := os.ReadFile(dsnFile)
+		raw, _, err := secrets.ReadSecureFile(dsnFile, secrets.MaxValueBytes)
 		if err != nil {
 			return "", fmt.Errorf("read dsn file: %w", err)
 		}
@@ -666,8 +669,12 @@ func devTestArgv(runPattern, count string, verbose bool, timeout string, pkgs, e
 }
 
 // dbTestPackages pins the packages whose tests touch the database,
-// determined by testdb/store imports. The unit test below asserts
-// every entry exists so the list cannot rot silently.
+// determined by testdb imports. e2e/... is deliberately excluded
+// (separate boundary harness, runs under dev:test-full only). The
+// unit test below asserts every entry exists AND that no
+// testdb-importing package is missing — the list rotted silently
+// once (broker/invite/capability added without it, so their live
+// gates matched zero tests), which the completeness half forbids.
 var dbTestPackages = []string{
 	"./store/...",
 	"./server/...",
@@ -677,6 +684,9 @@ var dbTestPackages = []string{
 	"./spike/...",
 	"./sandbox/...",
 	"./cmd/studio/...",
+	"./broker/...",
+	"./invite/...",
+	"./capability/...",
 }
 
 func runDevTest(args []string) error {

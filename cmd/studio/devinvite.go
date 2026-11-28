@@ -12,6 +12,7 @@ import (
 	"github.com/PithomLabs/miniapp-studio/dbenv"
 	"github.com/PithomLabs/miniapp-studio/invite"
 	"github.com/PithomLabs/miniapp-studio/secrets"
+	"github.com/PithomLabs/miniapp-studio/store"
 )
 
 // Invitation verbs are operator ceremonies against the shared dev
@@ -25,6 +26,16 @@ type inviteFlags struct {
 	dsnFile      string
 	tenant       string
 	id           string
+}
+
+// checkTTLHours rejects non-positive, NaN, infinite, and over-max
+// TTLs at the CLI (F35-11): Go parses "NaN"/"+Inf" without error,
+// and a typo'd TTL must never silently become a 7-day invite.
+func checkTTLHours(h float64) error {
+	if !(h > 0 && h <= 720) {
+		return fmt.Errorf("ttl-hours must be within (0, 720], got %v", h)
+	}
+	return nil
 }
 
 func inviteFlagSet(name string, f *inviteFlags) *flag.FlagSet {
@@ -65,12 +76,9 @@ func fillTokenFile(f *os.File, token string) error {
 }
 
 func readTokenFile(path string) (string, error) {
-	if err := secrets.CheckFileMode(path); err != nil {
-		return "", fmt.Errorf("token file: %w", err)
-	}
-	raw, err := os.ReadFile(path)
+	raw, _, err := secrets.ReadSecureFile(path, secrets.MaxValueBytes)
 	if err != nil {
-		return "", fmt.Errorf("read token file: %w", err)
+		return "", fmt.Errorf("token file: %w", err)
 	}
 	return string(raw), nil
 }
@@ -110,6 +118,9 @@ func runDevInviteCreate(args []string, stdout io.Writer) error {
 	}
 	if f.tenant == "" || binding == "" || invitedBy == "" || tokenFile == "" {
 		return fmt.Errorf("usage: studio dev invite-create --tenant T --binding B --invited-by OP --token-file PATH [--ttl-hours N --metadata-file M --dsn-file D]")
+	}
+	if err := checkTTLHours(ttlHours); err != nil {
+		return fmt.Errorf("dev invite-create: %w", err)
 	}
 	resv, err := reserveTokenFile(tokenFile)
 	if err != nil {
@@ -212,6 +223,9 @@ func runDevInviteResend(args []string, stdout io.Writer) error {
 	if f.tenant == "" || f.id == "" || tokenFile == "" {
 		return fmt.Errorf("usage: studio dev invite-resend --tenant T --id ID --token-file PATH [--ttl-hours N --metadata-file M --dsn-file D]")
 	}
+	if err := checkTTLHours(ttlHours); err != nil {
+		return fmt.Errorf("dev invite-resend: %w", err)
+	}
 	resv, err := reserveTokenFile(tokenFile)
 	if err != nil {
 		return fmt.Errorf("dev invite-resend: %v", err)
@@ -233,6 +247,35 @@ func runDevInviteResend(args []string, stdout io.Writer) error {
 		return fmt.Errorf("dev invite-resend: invite %s rotated but %v", newID, err)
 	}
 	fmt.Fprintf(stdout, "resent invitation %s (replaces %s; token in %s)\n", newID, f.id, tokenFile)
+	return nil
+}
+
+func runDevOperatorOffboard(args []string, stdout io.Writer) error {
+	var f inviteFlags
+	fs := inviteFlagSet("dev operator-offboard", &f)
+	var binding string
+	fs.StringVar(&binding, "binding", "", "binding id to offboard (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if f.tenant == "" || binding == "" {
+		return fmt.Errorf("usage: studio dev operator-offboard --tenant T --binding B [--metadata-file M --dsn-file D]")
+	}
+	bf := &brokerFlags{metadataFile: f.metadataFile, dsnFile: f.dsnFile}
+	ctx, cancel, dsn, pol, err := brokerPool(fs, bf)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	pool, err := dbenv.Pool(ctx, dsn, pol)
+	if err != nil {
+		return redactDSN(fmt.Errorf("dev operator-offboard: %w", err), dsn)
+	}
+	defer pool.Close()
+	if err := store.OffboardOperator(ctx, pool, f.tenant, binding); err != nil {
+		return redactDSN(fmt.Errorf("dev operator-offboard: %w", err), dsn)
+	}
+	fmt.Fprintf(stdout, "offboarded %s/%s (outstanding invitations revoked)\n", f.tenant, binding)
 	return nil
 }
 

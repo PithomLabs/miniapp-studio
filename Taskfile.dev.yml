@@ -174,6 +174,20 @@ tasks:
     cmds:
       - "{{.STUDIO}} dev invite-list --tenant {{.TENANT}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
 
+  operator-offboard:
+    desc: Deactivate an operator and revoke its outstanding invitations (TENANT/BINDING overridable)
+    preconditions:
+      - sh: test -f "{{.METADATA_FILE}}"
+        msg: "Run task dev:bind first (missing {{.METADATA_FILE}})"
+      - sh: test -f "{{.DSN_FILE}}"
+        msg: "Run task dev:bind first (missing {{.DSN_FILE}})"
+      - sh: test -n "{{.TENANT}}"
+        msg: "Pass TENANT=<id> (no default)"
+      - sh: test -n "{{.BINDING}}"
+        msg: "Pass BINDING=<id> (no default)"
+    cmds:
+      - "{{.STUDIO}} dev operator-offboard --tenant {{.TENANT}} --binding {{.BINDING}} --metadata-file {{.METADATA_FILE}} --dsn-file {{.DSN_FILE}}"
+
   capability-refresh:
     desc: Refresh a tenant capability snapshot and print the summary (TENANT overridable)
     preconditions:

@@ -102,3 +102,57 @@ func TestMigrationDigestMatchesDisk(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrationFunctionOwnershipDiscipline pins the 000027 invariant
+// for every migration that touches lookup-owned functions (live
+// 42501 on the first 000031 attempt): function DDL/ACL executes
+// ONLY between SET ROLE studio_lookup and RESET ROLE, while
+// table-owner operations (CREATE TRIGGER, table GRANT/REVOKE)
+// stay outside the role block.
+func TestMigrationFunctionOwnershipDiscipline(t *testing.T) {
+	up, err := testReadMigrationFile(t, "000031_offboard_correction.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(up)
+	setAt := strings.Index(text, "SET ROLE studio_lookup;")
+	resetAt := strings.Index(text, "RESET ROLE;")
+	if setAt < 0 || resetAt < 0 || resetAt < setAt {
+		t.Fatal("000031 up lacks a SET ROLE/RESET ROLE block")
+	}
+	inside := text[setAt:resetAt]
+	outside := text[:setAt] + text[resetAt:]
+	for _, want := range []string{"CREATE OR REPLACE FUNCTION studio.invitation_accept", "CREATE OR REPLACE FUNCTION studio.operator_offboard", "GRANT EXECUTE ON FUNCTION studio.invitation_accept"} {
+		if !strings.Contains(inside, want) {
+			t.Errorf("000031 up: %q outside the role block", want)
+		}
+	}
+	for _, want := range []string{"CREATE TRIGGER operators_reactivation_revoke", "REVOKE DELETE ON studio.invitations", "GRANT UPDATE (revoked_at)"} {
+		if !strings.Contains(outside, want) {
+			t.Errorf("000031 up: %q inside the role block (table-owner op)", want)
+		}
+	}
+	down, err := testReadMigrationFile(t, "000031_offboard_correction.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dtext := string(down)
+	dset := strings.Index(dtext, "SET ROLE studio_lookup;")
+	dreset := strings.Index(dtext, "RESET ROLE;")
+	if dset < 0 || dreset < 0 || dreset < dset {
+		t.Fatal("000031 down lacks a SET ROLE/RESET ROLE block")
+	}
+	if !strings.Contains(dtext[dset:dreset], "DROP FUNCTION IF EXISTS studio.operator_offboard") {
+		t.Error("000031 down: function drops outside the role block")
+	}
+	down29, err := testReadMigrationFile(t, "000029_invitations.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d29 := string(down29)
+	s29 := strings.Index(d29, "SET ROLE studio_lookup;")
+	r29 := strings.Index(d29, "RESET ROLE;")
+	if s29 < 0 || r29 < 0 || r29 < s29 || !strings.Contains(d29[s29:r29], "DROP FUNCTION IF EXISTS studio.invitation_accept") {
+		t.Error("000029 down: function drop outside a role block")
+	}
+}
